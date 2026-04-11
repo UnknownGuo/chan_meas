@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "2026-04-02-data-management-design.md",
+                "file": "2026-0402-plugin-claude.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "2026-04-02-data-management-design"
+              "title": "2026-0402-plugin-claude"
             }
           }
         ]
@@ -185,7 +185,11 @@
   },
   "active": "9eeb7abedc266903",
   "lastOpenFiles": [
+    "2026-04-02-claude-talk.md",
     "reference/20260402_gemini.md",
+    "2026-0402-plugin-claude.md",
+    "2026-04-02-data-management-design.md",
+    "新建文档.md",
     "reference/_科学研究项目管理建议 .md",
     "reference"
   ]

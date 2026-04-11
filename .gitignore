@@ -3,3 +3,20 @@ data/
 __pycache__/
 *.pyc
 .ipynb_checkpoints/
+
+# 虚拟环境
+.venv/
+
+# 编辑器 / IDE
+.vscode/
+.obsidian/
+docs/.obsidian/
+docs/specs/.obsidian/
+
+# 输出 / 临时文件
+outputs/
+report/
+*.png
+
+# 飞书同步状态
+.feishu-sync.json
