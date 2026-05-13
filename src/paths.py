@@ -9,10 +9,11 @@ except ImportError:
 PROJECT_ROOT = Path(__file__).parent.parent
 
 # ── 处理后的数据（项目内）──────────────────────────
-DATA_DIR        = PROJECT_ROOT / "data"
-CALIB_B2B_DIR   = DATA_DIR / "calibration" / "b2b"
-CALIB_OTA_DIR   = DATA_DIR / "calibration" / "static_ota"
-MEASURED_DIR    = DATA_DIR / "measured"
+DATA_DIR          = PROJECT_ROOT / "data"
+CALIB_B2B_DIR     = DATA_DIR / "calibration" / "b2b"
+CALIB_B2B_HF_DIR  = CALIB_B2B_DIR / "h_f"   # B2B H(f) 向量 (.npy, complex128, shape=(U,))
+CALIB_OTA_DIR     = DATA_DIR / "calibration" / "static_ota"
+MEASURED_DIR      = DATA_DIR / "measured"
 
 # ── 原始数据（外部大硬盘）─────────────────────────
 RAW_MEA_DIR     = Path(RAW_MEA_ROOT)
