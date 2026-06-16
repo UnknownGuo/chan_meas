@@ -308,12 +308,12 @@ function updateDopplerWaterfall() {
   const dw = AppState.dataset?.dopplerTimeWaterfall;
   if (!dw) return;
   const range = robustRange(dw.powerDb.flat());
-  const data = dw.powerDb.flatMap((row, dIdx) => row.map((v, tIdx) => [dIdx, tIdx, Number(v)]));
+  const data = dw.powerDb.flatMap((row, dIdx) => row.map((v, tIdx) => [tIdx, dIdx, Number(v)]));
   AppState.charts.dopplerWaterfall.setOption({
-    tooltip: { position: 'top', formatter: p => `doppler=${dw.dopplerHz[p.data[0]]}Hz<br/>t=${dw.timeSec[p.data[1]]?.toFixed?.(1) ?? p.data[1]}s<br/>power=${p.data[2].toFixed(1)} dB` },
+    tooltip: { position: 'top', formatter: p => `t=${dw.timeSec[p.data[0]]?.toFixed?.(1) ?? p.data[0]}s<br/>doppler=${dw.dopplerHz[p.data[1]]}Hz<br/>power=${p.data[2].toFixed(1)} dB` },
     grid: { left: 56, right: 64, top: 16, bottom: 40 },
-    xAxis: { type: 'category', name: 'Doppler (Hz)', nameLocation: 'middle', nameGap: 28, data: dw.dopplerHz.map(v => Number(v).toFixed(0)), axisLabel: { interval: Math.ceil(dw.dopplerHz.length / 8) } },
-    yAxis: { type: 'category', name: 'Time (s)', data: dw.timeSec.map(v => Number(v).toFixed(0)), axisLabel: { interval: Math.ceil(dw.timeSec.length / 8) } },
+    xAxis: { type: 'category', name: 'Time (s)', nameLocation: 'middle', nameGap: 28, data: dw.timeSec.map(v => Number(v).toFixed(0)), axisLabel: { interval: Math.ceil(dw.timeSec.length / 8) } },
+    yAxis: { type: 'category', name: 'Doppler (Hz)', data: dw.dopplerHz.map(v => Number(v).toFixed(0)), axisLabel: { interval: Math.ceil(dw.dopplerHz.length / 8) } },
     visualMap: visualMapContinuous(range, JET_STOPS),
     series: [{ type: 'heatmap', data, progressive: 8000 }],
     ...axisPointerOpt(),
