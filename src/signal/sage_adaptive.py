@@ -130,6 +130,7 @@ def estimate_window_paths_adaptive(
     min_coverage_gain: float = 0.005,
     max_paths_hard: int = 30,
     coverage_delay_bins: int = 300,
+    enable_weak_nonprominent_prune: bool = True,
 ) -> SageWindowEstimate:
     """Adaptive SAGE: add paths until reconstructed PDP coverage is met.
 
@@ -312,7 +313,7 @@ def estimate_window_paths_adaptive(
             continue
         rel_power_db = float(item.power_db - strongest_power_db)
         local_prominence_db = float(meta["local_prominence_db"])
-        if pruned and local_prominence_db < 3.0 and rel_power_db < -15.0:
+        if pruned and enable_weak_nonprominent_prune and local_prominence_db < 3.0 and rel_power_db < -15.0:
             continue
         pruned.append(item)
         if len(pruned) >= max_paths_hard:
