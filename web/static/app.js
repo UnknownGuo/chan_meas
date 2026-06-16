@@ -292,12 +292,12 @@ function updatePdpWaterfall() {
   const delayNs = wf.delayNs.slice(0, lastIdx);
   const powerDb = wf.powerDb.map(row => row.slice(0, lastIdx));
   const range = robustRange(powerDb.flat());
-  const data = powerDb.flatMap((row, y) => row.map((v, x) => [x, y, Number(v)]));
+  const data = powerDb.flatMap((row, t) => row.map((v, d) => [t, d, Number(v)]));
   AppState.charts.pdpWaterfall.setOption({
-    tooltip: { position: 'top', formatter: p => `t=${wf.timeSec[p.data[1]]?.toFixed?.(1) ?? p.data[1]}s<br/>delay=${delayNs[p.data[0]]}ns<br/>power=${p.data[2].toFixed(1)} dB` },
+    tooltip: { position: 'top', formatter: p => `t=${wf.timeSec[p.data[0]]?.toFixed?.(1) ?? p.data[0]}s<br/>delay=${delayNs[p.data[1]]}ns<br/>power=${p.data[2].toFixed(1)} dB` },
     grid: { left: 56, right: 64, top: 16, bottom: 40 },
-    xAxis: { type: 'category', name: 'Delay (ns)', nameLocation: 'middle', nameGap: 28, data: delayNs, axisLabel: { interval: Math.ceil(delayNs.length / 8) } },
-    yAxis: { type: 'category', name: 'Time (s)', data: wf.timeSec.map(v => Number(v).toFixed(0)), axisLabel: { interval: Math.ceil(wf.timeSec.length / 8) } },
+    xAxis: { type: 'category', name: 'Time (s)', nameLocation: 'middle', nameGap: 28, data: wf.timeSec.map(v => Number(v).toFixed(0)), axisLabel: { interval: Math.ceil(wf.timeSec.length / 8) } },
+    yAxis: { type: 'category', name: 'Delay (ns)', data: delayNs, axisLabel: { interval: Math.ceil(delayNs.length / 8) } },
     visualMap: visualMapContinuous(range, JET_STOPS),
     series: [{ type: 'heatmap', data, progressive: 8000 }],
     ...axisPointerOpt(),
@@ -308,12 +308,12 @@ function updateDopplerWaterfall() {
   const dw = AppState.dataset?.dopplerTimeWaterfall;
   if (!dw) return;
   const range = robustRange(dw.powerDb.flat());
-  const data = dw.powerDb.flatMap((row, y) => row.map((v, x) => [x, y, Number(v)]));
+  const data = dw.powerDb.flatMap((row, dIdx) => row.map((v, tIdx) => [dIdx, tIdx, Number(v)]));
   AppState.charts.dopplerWaterfall.setOption({
-    tooltip: { position: 'top', formatter: p => `t=${dw.timeSec[p.data[0]]?.toFixed?.(1) ?? p.data[0]}s<br/>doppler=${dw.dopplerHz[p.data[1]]}Hz<br/>power=${p.data[2].toFixed(1)} dB` },
+    tooltip: { position: 'top', formatter: p => `doppler=${dw.dopplerHz[p.data[0]]}Hz<br/>t=${dw.timeSec[p.data[1]]?.toFixed?.(1) ?? p.data[1]}s<br/>power=${p.data[2].toFixed(1)} dB` },
     grid: { left: 56, right: 64, top: 16, bottom: 40 },
-    xAxis: { type: 'category', name: 'Time (s)', nameLocation: 'middle', nameGap: 28, data: dw.timeSec.map(v => Number(v).toFixed(0)), axisLabel: { interval: Math.ceil(dw.timeSec.length / 8) } },
-    yAxis: { type: 'category', name: 'Doppler (Hz)', data: dw.dopplerHz.map(v => Number(v).toFixed(0)), axisLabel: { interval: Math.ceil(dw.dopplerHz.length / 8) } },
+    xAxis: { type: 'category', name: 'Doppler (Hz)', nameLocation: 'middle', nameGap: 28, data: dw.dopplerHz.map(v => Number(v).toFixed(0)), axisLabel: { interval: Math.ceil(dw.dopplerHz.length / 8) } },
+    yAxis: { type: 'category', name: 'Time (s)', data: dw.timeSec.map(v => Number(v).toFixed(0)), axisLabel: { interval: Math.ceil(dw.timeSec.length / 8) } },
     visualMap: visualMapContinuous(range, JET_STOPS),
     series: [{ type: 'heatmap', data, progressive: 8000 }],
     ...axisPointerOpt(),
