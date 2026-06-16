@@ -47,17 +47,27 @@ function robustRange(values, loPct = 1, hiPct = 99) {
 - PDP 瀑布：`visualMap.min/max = robustRange(cirWaterfall.powerDb.flat())`
 - 散点：`visualMap.min/max = robustRange(mpcScatter.map(m=>m.powerDb))`
 
-### 1.2 三张图的 ECharts 配置
+### 1.2 四张图的 ECharts 配置（2026-06-16 用户实测反馈后修订）
 
-| 图 | type | x | y | 色=visualMap 维度 | 长宽比 |
-|---|---|---|---|---|---|
-| PDP 原始瀑布 | heatmap | delayNs(category) | timeSec(category) | powerDb，JET_STOPS | 容器 `aspect-ratio: 2/1` |
-| SAGE delay-time | scatter | timeSec(value) | delayNs(value) | powerDb，HOT_STOPS | `aspect-ratio: 2/1` |
-| SAGE doppler-time | scatter | timeSec(value) | dopplerHz(value) | powerDb，HOT_STOPS | `aspect-ratio: 2/1` |
+用户实测后反馈：原 3 图单列纵向铺满太大；缺失「原始 Doppler-Time-Power-Spectrum」（连续谱图，不是 SAGE 散点）；PDP 瀑布时延范围该裁到 2000m 等效距离。修订为 **2×2 网格**：
 
-- 散点：`symbolSize: 6`，`visualMap` 连续型横向放底部，`tooltip` 显示 `t={timeSec}s, delay/doppler={..}, power={powerDb} dB`。
+| 图 | type | x | y | 色=visualMap 维度 | 长宽比 | 数据源 |
+|---|---|---|---|---|---|---|
+| PDP 原始瀑布 | heatmap | delayNs(category，裁剪到≤2000m等效) | timeSec(category) | powerDb，JET_STOPS | `aspect-ratio: 2/1`，半行宽 | `cirWaterfall` |
+| Doppler-Time-Power-Spectrum | heatmap | timeSec(category) | dopplerHz(category) | powerDb，JET_STOPS | `aspect-ratio: 2/1`，半行宽 | `dopplerTimeWaterfall`（新增字段，见 1.4） |
+| SAGE delay-time | scatter | timeSec(value) | delayNs(value) | powerDb，HOT_STOPS | `aspect-ratio: 2/1`，半行宽 | `mpcScatter` |
+| SAGE doppler-time | scatter | timeSec(value) | dopplerHz(value) | powerDb，HOT_STOPS | `aspect-ratio: 2/1`，半行宽 | `mpcScatter` |
+
+布局：`.summary-grid` 为两个 `.summary-row`（各 `display:grid; grid-template-columns:1fr 1fr`），第一行 [PDP瀑布, Doppler谱]，第二行 [SAGE delay-time, SAGE doppler-time]。每格仍保持 `aspect-ratio:2/1`，半行宽使整体高度比原方案减半。
+
+- 散点：`symbolSize: 6`，`visualMap` 改为 **竖直、右置**（`orient:'vertical', right:6, calculable:false`）— 水平放底部曾与 x 轴标题重叠且可拖拽手柄渲染异常，竖直右置贴合 matplotlib colorbar 习惯且无此问题。
 - 瀑布：保留现有 `heatmapTriples()`，仅替换 colormap 与自适应范围；`progressive: 8000`。
 - 坐标轴名：与参照图一致（`Measurement time (s)` / `Delay (ns)` / `Doppler (Hz)` / colorbar `Power (dB)`）。
+- PDP 瀑布时延裁剪：`MAX_DISPLAY_DELAY_NS = 2000 / 299792458 * 1e9 ≈ 6671 ns`，渲染前按此裁剪 `delayNs`/`powerDb` 列（不裁剪数据文件，只裁剪渲染输入）。
+
+### 1.4 dopplerTimeWaterfall 数据字段（新增）
+
+`src/ui_dataset.py::build_dataset_from_arrays` 新增调用既有函数 `compute_doppler_time_waterfall(cir, frame_rate_hz=frame_rate_hz, window_size_frames=20, step_frames=100, max_delay_bins=max_delay_bins, n_doppler_bins=128)`（该函数早已实现并有单测，此前未接入导出管线），写入 `dataset["dopplerTimeWaterfall"]`，与 SAGE 的 w20/step100 窗口时间轴一致（同为 283 个窗口、相同 `timeSec`）。已重跑 `scripts/export_ui_b2b_adaptive_sage.py` 重新生成全部 5 个 `data/ui_samples/*.json`。`analyze_one()` 调用同一 `build_measurement_dataset`，新分析的 bin 自动带有此字段，无需额外改动。
 
 ### 1.3 删除
 - `updateMusicPlot()` 中 `figure4_style_0m_special_w20` 路径逻辑与 `#mpcPng` 静态图节点。

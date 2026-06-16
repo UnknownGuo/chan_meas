@@ -116,9 +116,10 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .export-fig-btn { padding: 4px 9px; font-size: 12px; }
 .legend { color: var(--muted); font-size: 12px; }
 
-/* 汇总图：按参照图 ~2:1 长宽比，整列堆叠 */
+/* 汇总图：2 行 2 列，每格保持参照图 ~2:1 长宽比 */
 .summary-grid { display: flex; flex-direction: column; gap: 12px; flex: 0 0 auto; }
-.wide-chart .chart { width: 100%; aspect-ratio: 2 / 1; min-height: 240px; }
+.summary-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.wide-chart .chart { width: 100%; aspect-ratio: 2 / 1; min-height: 160px; }
 
 /* 交互区：左 PDP 曲线，右 GPS 地图 */
 .interactive-grid { display: grid; grid-template-columns: 1.1fr 1fr; gap: 12px; flex: 0 0 auto; height: 320px; }
@@ -133,4 +134,5 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   .app-shell { height: auto; grid-template-columns: 290px 1fr; grid-template-rows: 72px auto; }
   .interactive-grid { grid-template-columns: 1fr; height: auto; }
   .interactive-grid .chart, .map-card .map-panel { min-height: 280px; }
+  .summary-row { grid-template-columns: 1fr; }
 }

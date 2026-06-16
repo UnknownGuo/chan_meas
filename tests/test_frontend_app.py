@@ -73,6 +73,7 @@ def test_dashboard_html_serves_redesigned_layout():
     assert "V2V" not in html
     assert 'id="mapPanel"' in html
     assert 'id="pdpWaterfallChart"' in html
+    assert 'id="dopplerWaterfallChart"' in html
     assert 'id="delayTimeChart"' in html
     assert 'id="dopplerTimeChart"' in html
     assert 'id="frameSlider"' in html
@@ -94,6 +95,7 @@ def test_static_frontend_files_exist_with_real_event_hooks():
         "syncFrame",
         "updateMapPanel",
         "updatePdpWaterfall",
+        "updateDopplerWaterfall",
         "updateDelayTime",
         "updateDopplerTime",
         "updateStatusBar",

@@ -89,6 +89,7 @@ function resetUI() {
 // ---------------- 布局初始化 ----------------
 function initLayout() {
   AppState.charts.pdpWaterfall = echarts.init(document.getElementById('pdpWaterfallChart'));
+  AppState.charts.dopplerWaterfall = echarts.init(document.getElementById('dopplerWaterfallChart'));
   AppState.charts.delayTime = echarts.init(document.getElementById('delayTimeChart'));
   AppState.charts.dopplerTime = echarts.init(document.getElementById('dopplerTimeChart'));
   AppState.charts.pdp = echarts.init(document.getElementById('pdpChart'));
@@ -258,6 +259,7 @@ async function loadDatasetFromApi(name = 'default') {
     document.getElementById('datasetStatus').className = 'status-pill ok';
 
     updatePdpWaterfall();
+    updateDopplerWaterfall();
     updateDelayTime();
     updateDopplerTime();
     syncFrame(0);
@@ -278,16 +280,40 @@ function visualMapContinuous(range, colors) {
 function dataZoomXY() { return [{ type: 'inside' }, { type: 'inside', orient: 'vertical' }]; }
 function axisPointerOpt() { return AppState.cursor ? { axisPointer: { show: true, type: 'cross' } } : {}; }
 
+const SPEED_OF_LIGHT_MPS = 299792458;
+const MAX_DISPLAY_DISTANCE_M = 2000;
+const MAX_DISPLAY_DELAY_NS = MAX_DISPLAY_DISTANCE_M / SPEED_OF_LIGHT_MPS * 1e9; // ~6671 ns
+
 function updatePdpWaterfall() {
   const wf = AppState.dataset?.cirWaterfall;
   if (!wf) return;
-  const range = robustRange(wf.powerDb.flat());
-  const data = wf.powerDb.flatMap((row, y) => row.map((v, x) => [x, y, Number(v)]));
+  const cutoff = wf.delayNs.findIndex(d => Number(d) > MAX_DISPLAY_DELAY_NS);
+  const lastIdx = cutoff === -1 ? wf.delayNs.length : cutoff;
+  const delayNs = wf.delayNs.slice(0, lastIdx);
+  const powerDb = wf.powerDb.map(row => row.slice(0, lastIdx));
+  const range = robustRange(powerDb.flat());
+  const data = powerDb.flatMap((row, y) => row.map((v, x) => [x, y, Number(v)]));
   AppState.charts.pdpWaterfall.setOption({
-    tooltip: { position: 'top', formatter: p => `t=${wf.timeSec[p.data[1]]?.toFixed?.(1) ?? p.data[1]}s<br/>delay=${wf.delayNs[p.data[0]]}ns<br/>power=${p.data[2].toFixed(1)} dB` },
+    tooltip: { position: 'top', formatter: p => `t=${wf.timeSec[p.data[1]]?.toFixed?.(1) ?? p.data[1]}s<br/>delay=${delayNs[p.data[0]]}ns<br/>power=${p.data[2].toFixed(1)} dB` },
     grid: { left: 56, right: 64, top: 16, bottom: 40 },
-    xAxis: { type: 'category', name: 'Delay (ns)', nameLocation: 'middle', nameGap: 28, data: wf.delayNs, axisLabel: { interval: Math.ceil(wf.delayNs.length / 8) } },
+    xAxis: { type: 'category', name: 'Delay (ns)', nameLocation: 'middle', nameGap: 28, data: delayNs, axisLabel: { interval: Math.ceil(delayNs.length / 8) } },
     yAxis: { type: 'category', name: 'Time (s)', data: wf.timeSec.map(v => Number(v).toFixed(0)), axisLabel: { interval: Math.ceil(wf.timeSec.length / 8) } },
+    visualMap: visualMapContinuous(range, JET_STOPS),
+    series: [{ type: 'heatmap', data, progressive: 8000 }],
+    ...axisPointerOpt(),
+  }, true);
+}
+
+function updateDopplerWaterfall() {
+  const dw = AppState.dataset?.dopplerTimeWaterfall;
+  if (!dw) return;
+  const range = robustRange(dw.powerDb.flat());
+  const data = dw.powerDb.flatMap((row, y) => row.map((v, x) => [x, y, Number(v)]));
+  AppState.charts.dopplerWaterfall.setOption({
+    tooltip: { position: 'top', formatter: p => `t=${dw.timeSec[p.data[0]]?.toFixed?.(1) ?? p.data[0]}s<br/>doppler=${dw.dopplerHz[p.data[1]]}Hz<br/>power=${p.data[2].toFixed(1)} dB` },
+    grid: { left: 56, right: 64, top: 16, bottom: 40 },
+    xAxis: { type: 'category', name: 'Time (s)', nameLocation: 'middle', nameGap: 28, data: dw.timeSec.map(v => Number(v).toFixed(0)), axisLabel: { interval: Math.ceil(dw.timeSec.length / 8) } },
+    yAxis: { type: 'category', name: 'Doppler (Hz)', data: dw.dopplerHz.map(v => Number(v).toFixed(0)), axisLabel: { interval: Math.ceil(dw.dopplerHz.length / 8) } },
     visualMap: visualMapContinuous(range, JET_STOPS),
     series: [{ type: 'heatmap', data, progressive: 8000 }],
     ...axisPointerOpt(),
@@ -429,7 +455,7 @@ function exportPdpCsv() {
 
 function rerenderAll() {
   if (AppState.uiState !== 'READY') return;
-  updatePdpWaterfall(); updateDelayTime(); updateDopplerTime(); updatePdpCurve();
+  updatePdpWaterfall(); updateDopplerWaterfall(); updateDelayTime(); updateDopplerTime(); updatePdpCurve();
 }
 
 // ---------------- 工具 ----------------
