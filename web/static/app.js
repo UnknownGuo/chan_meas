@@ -384,12 +384,16 @@ function syncFrame(sliderValue) {
 function updatePdpCurve() {
   const curve = currentEntry()?.payload?.pdpCurve;
   if (!curve) return;
+  const cutoff = curve.delayNs.findIndex(d => Number(d) > MAX_DISPLAY_DELAY_NS);
+  const lastIdx = cutoff === -1 ? curve.delayNs.length : cutoff;
+  const delayNs = curve.delayNs.slice(0, lastIdx);
+  const powerDb = curve.powerDb.slice(0, lastIdx);
   AppState.charts.pdp.setOption({
     tooltip: { trigger: 'axis' },
     grid: { left: 52, right: 16, top: 18, bottom: 38 },
-    xAxis: { type: 'category', name: 'Delay (ns)', nameLocation: 'middle', nameGap: 26, data: curve.delayNs },
+    xAxis: { type: 'category', name: 'Delay (ns)', nameLocation: 'middle', nameGap: 26, data: delayNs },
     yAxis: { type: 'value', name: curve.relative ? 'Rel dB' : 'dB' },
-    series: [{ type: 'line', showSymbol: false, smooth: false, data: curve.powerDb, lineStyle: { color: '#2474d2', width: 2 }, areaStyle: { color: 'rgba(36,116,210,0.12)' } }],
+    series: [{ type: 'line', showSymbol: false, smooth: false, data: powerDb, lineStyle: { color: '#2474d2', width: 2 }, areaStyle: { color: 'rgba(36,116,210,0.12)' } }],
     ...axisPointerOpt(),
   }, true);
 }
