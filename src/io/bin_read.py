@@ -18,6 +18,7 @@ import torch
 FS_HZ = 100_000_000  # ADC sample rate, Hz
 BW_HZ = 50e6         # signal bandwidth, Hz
 ATT_B2B_DB = 40.0   # standard B2B attenuator, dB
+FRAME_RATE_HZ = 100.0  # frame repetition rate, Hz (10 ms / frame)
 
 # ── Frame layout ──────────────────────────────────────────────────────────────
 

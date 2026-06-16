@@ -1,0 +1,628 @@
+SAGE/HRPE 多径参数估计：主径吸附、弱径伪检、
+PDP 与估计不一致及信号模型修正
+执行摘要
+本报告系统梳理了在宽带单天线信道测量数据中使用 SAGE/HRPE（空间交替广义期望最大化/高分辨率
+参数估计）算法提取多径分量（MPC）时面临的核心挑战：(1) 主径吸附（dominant path
+crowding），(2) PDP 瀑布图可视峰与 SAGE 输出不一致，(3) 初始化偏向强径，(4) 弱径伪检与过估
+计，(5) 窗口内非平稳性与延迟漂移，以及 (6) 瞬态干扰处理。报告覆盖经典文献（Fleury 1999
+SAGE、Richter 2005 RiMAX）到近年进展（UWB-RiMAX、多模 DMC 估计、时变信道 MPC 追
+踪），并给出针对你当前实现的具体修改建议。
+
+1. 理论基础：信号模型与算法谱系
+1.1 Fleury 1999 SAGE 信号模型
+Fleury 等人 1999 年提出的 SAGE 算法是信道参数估计的奠基性工作。其原始信号模型将接收信号建模
+为 条镜面路径（specular MPC）的叠加：[^1]
+
+其中
+为结构参数（延迟、Doppler、方向等）， 为复增益，
+为导向向量，
+为加性白高斯噪声。SAGE 通过 E-step（基于完全数据的充分统计量）与 M-step（逐路径最大化）交
+替迭代，将 路径联合优化问题分解为 个独立单路径优化。[2][1]
+关键缺陷：原始 SAGE 将残差视为白噪声，没有对密集多径分量（DMC）建模。这意味着当环境中存
+在扩散散射时，SAGE 会试图用 specular 路径去拟合 DMC 功率，导致幽灵路径（ghost path）的产
+生。[^3]
+
+1.2 RiMAX：引入 DMC 的联合最大似然估计
+Richter（2005 年博士论文）提出的 RiMAX 算法是目前工业界和学术界最广泛使用的宽带 HRPE 框
+架。其信号模型为：[^4]
+确定部分
+
+随机部分
+
+SMC（specular multipath components）：具有明确延迟、方向、Doppler 的镜面路径，相位
+可估。[^5]
+DMC（dense multipath components）：不可分辨路径的非相干叠加，仅能估计其功率谱。在
+频域建模为均值为零的复高斯过程，协方差矩阵具有 Toeplitz 结构，PDP 呈指数衰减。[3][5]
+测量噪声
+
+：独立同分布复高斯噪声。
+
+DMC 的 PDP 模型参数化为
+，分别表示 DMC 初始功率、衰减带宽、起始延迟和测量噪
+声方差。利用 SMC 和 DMC 参数渐近独立的性质，RiMAX 将联合 ML 问题解耦为两个交替优化子问
+题。[6][4][^3]
+
+1.3 模型对比
+特性
+
+SAGE（Fleury 1999）
+
+RiMAX（Richter 2005）
+
+噪声模型
+
+白高斯噪声
+
+SMC + DMC（指数衰减）+ 白噪声
+
+DMC 建模
+
+无
+
+参数化协方差矩阵
+
+优化框架
+
+EM/SAGE 逐路径
+
+Levenberg-Marquardt 联合优化
+
+DMC 存在时偏差
+
+大（偏向主径）
+
+小（jointly accounted）
+
+计算复杂度
+
+低
+
+中高（矩阵求逆）
+
+2. 问题一：主径吸附（Path Crowding / Dominant Path Absorption）
+2.1 根本原因分析
+问题本质：SAGE 的路径原子（path atom）是 delay 域上的 sinc 函数（或矩形窗的 sinc），而非冲激
+函数。若实现中使用"单 delay bin 上的冲激
+"，则忽略了匹配滤波/系统脉冲响应造成的延迟
+扩展。
+实际宽带信道测距系统中，单条镜面路径通过匹配滤波后，其 CIR 在 delay 维度的贡献是：
+
+其中
+为测量系统的脉冲响应函数（pulse shape / system impulse response），通常是 sinc 形
+（对应矩形频谱）或经窗函数修正后的形状，具有主瓣宽度
+和可观的旁瓣。若 SAGE 的信号模
+型中路径原子仍为
+，则：
+
+1. 强主径减除不完整，残差中保留主瓣/旁瓣能量；
+2. 后续 EM 迭代会将此残差解释为新的"路径"，聚集在主径附近。[7][8]
+这一问题在 Landmann 等人 2009 年的"高分辨率信道参数估计中的常见陷阱"和 2012 年的"不完整/不
+准确数据模型的影响"中有系统性讨论。**数据模型不完整（incomplete data model）**会导致角度/
+延迟分布估计的系统偏差。[8][7]
+
+2.2 解决方案：正确的路径原子模型
+推荐做法：在 SAGE/RiMAX 信号模型中，将系统频响
+RiMAX 框架中，延迟域的基矩阵定义为：[9][4]
+
+纳入基矩阵（basis matrix）构建。在
+
+其中
+是系统频响的对角矩阵（来自 back-to-back 标定），
+测量系统脉冲响应作为路径原子，而非 函数。
+
+是延迟的相位矩阵。这等价于将
+
+具体步骤：
+
+1. 在标定阶段（back-to-back calibration），测量发射和接收链路的完整频率响应
+2. 将
+
+纳入路径的导向矩阵
+
+；
+
+；
+
+3. 使路径原子在 delay 域上具有与测量系统一致的脉冲形状（sinc 形或窗函数修正）；
+4. SAGE 的完全数据充分统计量和 M-step 更新公式相应调整。
+Wang 等人（2019）在 mmWave 信道探测的 SAGE/RiMAX 标定中详细描述了系统响应提取与纳入的
+两步标定方案，对宽带单天线系统同样适用。[^9]
+分数延迟（off-grid delay）处理：真实路径的延迟通常不落在 delay 格点上。应使用分数延迟插值
+（sinc 插值或 Kaiser-windowed sinc）而非四舍五入到最近 bin，或在 M-step 中对 做连续值优化
+（如 Newton-type gradient step）。[10][11]
+
+3. 问题二：PDP 瀑布图可见脊线与 SAGE 输出不一致
+3.1 PDP 中可见的结构类型辨析
+PDP 瀑布图（delay-time waterfall）中可见的功率脊线不等于 SAGE 定义的"specular MPC"。必须区
+分以下成分：
+成分类型
+
+Specular MPC
+
+PDP 可见性
+
+SAGE 可估性
+
+本质
+
+连续、稳定的脊线
+
+高（delay+Doppler 稳定）
+
+确定性平面波，
+相位可估
+
+DMC（密集多径）
+
+漫散功率，无锐利脊线
+
+不可（作为 DMC
+整体建模）
+
+扩散散射的非相干叠加
+
+旁瓣（sidelobe）
+
+主径两侧规律峰值
+
+被主径吸附
+
+系统脉冲响应的旁瓣
+
+相干性弱的路径
+
+PDP 中可见但在窗口内不稳定
+
+受限
+
+短寿命路径或 delay 漂移
+
+瞬态噪声/干扰
+
+垂直亮带（全 delay
+同时增强）
+
+大量伪径
+
+非平稳干扰
+
+（镜面路径）
+
+关键洞见：RiMAX 的 DMC 模型（指数衰减 PDP + 随机相位）解释了为何 PDP 中"弥散"功率不能被
+SAGE 的 specular MPC 框架所捕获。在无 DMC 模型的 SAGE 中，这些能量会被"吸收"进伪路径。
+Schieler 等人（2022）进一步表明，DMC 的多模性（multi-modal DMC，即不同延迟段存在多个独立
+的扩散散射中心）会进一步干扰 specular 路径的估计精度。[6][5][^3]
+
+3.2 PDP 可见峰不被 SAGE 识别的正当理由
+以下情形中，PDP 可见峰不应被当作 specular MPC：
+
+1. DMC 功率峰：由扩散散射产生的非相干功率局部峰，在多个快照间随机相变。
+2. 匹配滤波旁瓣：主径脉冲响应的旁瓣在 PDP 中形成规律的周期结构，旁瓣位置取决于
+
+的整数
+
+倍。
+
+3. Delay 漂移轨迹：路径的 delay 在窗口内发生显著漂移时，SAGE（假设窗口内 delay 固定）无法
+将其视为稳定 specular 路径。
+
+4. 非相干噪声峰：热噪声或背景干扰的局部峰值。
+
+4. 问题三：初始化策略
+4.1 经典初始化方法
+2D delay-Doppler FFT 全局峰搜索（SAGE 原始方法）：
+在 FFT 谱上依次找最强峰，作为第 条路径的初始
+
+；
+
+每次找峰后，将对应的路径响应从接收信号中减去（SIC，successive interference
+cancellation）；
+偏向强主径及其旁瓣，弱径难以进入初始化。[^12]
+
+RiMAX 中的初始化（Richter 2005，Chapter 5）：
+采用逐步路径 ML 搜索（successive path ML grid search）：在 RiMAX 协方差加权的
+Mahalanobis 范数下寻找相关峰；
+因为协方差矩阵
+权；[4][3]
+
+包含了 DMC 信息，初始化时路径的"可见度"在 DMC 背景下被正确加
+
+Chen 等人（2023）描述了 RiMAX 的经典序贯初始化：找最强 SP，减去，再找次强 SP，直至残
+差功率低于阈值。[^4]
+PDP 辅助初始化（PDP-assisted initialization）：
+先从逐快照 robust PDP（如功率中值聚合）中找 delay 局部峰；
+以每个 delay 峰对应的 Doppler 估计（短时 FFT 或 2D 搜索）作为初始参数；
+能召回更多弱径，但需配合严格的路径验证/剪枝（见第 5 节）。
+
+Sparse Bayesian SAGE（SBL-SAGE）：
+Shutin 等人将稀疏贝叶斯学习（variational Bayesian inference）引入 SAGE，使用分层先验自
+动推断路径数（model order）；[^13]
+避免需要显式设定
+
+，并通过自动关联（relevance determination）实现路径自动剪枝。
+
+4.2 实践建议
+对于你的单天线 delay-Doppler SAGE 实现：
+
+1. 多分辨率 PDP 峰搜索 + 非相干 Doppler 估计：在 robust PDP（多帧幂中值 PDP）上寻找局部峰
+作为 delay 初始值，然后对每个 delay bin 做局部窗口的 STFT，找最强 Doppler 作为 初值。
+2. 先估计 DMC 参数：在初始化 specular 路径前，先用 RiMAX 的 DMC 模型估计
+，
+用此协方差矩阵 进行后续的加权 ML 搜索，减少 DMC 对 specular 路径初始化的干扰。[^4]
+3. 区分 PDP 中的旁瓣：在多 delay 峰中，以主径 delay 为中心，排除
+位置）。
+
+处的峰（匹配滤波旁瓣
+
+5. 问题四：弱径伪检与模型阶次选择
+5.1 模型阶次选择方法综述
+方法
+
+AIC（Akaike
+信息准则）
+
+最小化
+
+BIC/MDL
+（Bayesian/
+
+原理
+
+适用性
+
+，惩罚参数数量
+
+倾向于高估路径数，过于宽松
+
+更保守，适合快照数少的情形
+
+，惩罚更强
+
+最小描述长度）
+路径 SNR 阈值
+
+用 Fisher 信息矩阵的逆估计每条路径复增益的方差，若 SNR
+dB（卡方分布 90th 百分位）则剪枝[^3]
+
+RiMAX 标准做法，推荐
+
+似然改善阈值
+
+检验加入第
+条路径是否显著提高似然，
+若提高量不超过阈值则停止
+
+类似 LRT，与路径 SNR 思路一致
+
+残差能量准则
+
+每次路径减除后，
+若残差能量相对噪声底降幅低于阈值则停止
+
+适用于无 DMC 模型的简化实现
+
+CRB 估计方差
+
+对候选路径计算 Cramér-Rao 界，
+若估计方差超过允许阈值则认为不可靠
+
+与 FIM 法等价
+
+轨迹连续性（track
+duration）
+
+跨多个滑动窗口，只保留在若干连续窗口中稳定出现的路径
+
+适用于时变信道，推荐
+
+BenjaminiHochberg 程序
+
+多重假设检验框架，控制假发现率（FDR）[^14]
+
+适用于大量候选路径的统一剪枝
+
+（Fisher
+信息矩阵法）
+
+5.2 RiMAX 的路径可靠性剪枝（推荐方案）
+RiMAX 为每条估计的 specular 路径计算路径 SNR：[5][3]
+
+来自 Fisher 信息矩阵 的对角元素。若
+dB（对应复增益估计的 分布
+90th 百分位），则该路径被视为不可靠并被移除。这套剪枝标准比简单的功率阈值更合理，因为它考
+虑了 DMC 背景下路径的估计不确定性。
+其中
+
+5.3 针对伪径的实践判断
+对于你观察到的低功率散点（相对最强路径 −25 至 −35 dB），可通过以下方式辨别：
+旁瓣来源：检查是否规律出现在主径 delay 的
+
+处，且 Doppler 与主径相近。
+
+DMC 来源：若散点的 delay 分布与 PDP 的整体指数衰减一致，且无连续 Doppler 线，为 DMC。
+噪声峰：振幅无规律，在不同窗口随机出现。
+真实弱径：具有连续且不与主径 delay 周期性相关的 delay 轨迹，Doppler 与主径不同。
+
+6. 问题五：窗口内非平稳性与 Delay 漂移
+6.1 SAGE 平稳性假设的局限
+标准 SAGE/RiMAX 在 帧窗口内假设路径参数（
+）固定，这对应"局部平稳"假设。对于 V2V、
+UAV 等快速时变场景，路径 delay 会在窗口内发生显著漂移，导致估计偏差。[^15]
+
+6.2 时变信道的 MPC 追踪方法
+方法一：滑动窗口 + 跨窗口路径关联
+对相邻窗口的估计结果进行最近邻或匈牙利算法路径关联；
+
+Wang 等人（2017）在 V2V 双向信道的 HRPE 中使用此方法；[^15]
+适合适度时变的场景（delay 漂移远小于
+
+的窗口）。
+
+方法二：扩展 Kalman 滤波（EKF）/ 变维 Kalman 滤波（VDKF）
+将
+
+建模为状态向量，路径生灭用 birth-death 过程处理；
+
+Salmi 等人（2006, 2009）提出了基于状态空间的 MPC 追踪（KEST 框架）；[16][17][^18]
+VDKF（变维 Kalman）可在不同时刻自适应调整路径数，处理路径出现和消失。
+方法三：基展开模型（Basis Expansion Model, BEM）
+将窗口内 delay 漂移建模为多项式或 Slepian BEM：
+
+；
+
+增加每条路径的参数维度，但在路径数不多时有效。[^19]
+方法四：更短窗口 + 更保守的阈值
+将窗口缩短至满足局部平稳性的时间跨度（可用 LSFE 或局部散射函数估计来确定）；
+窗口越短，每窗口可用 Doppler 分辨率越低，需在时间分辨率和频率分辨率间权衡。
+
+6.3 推荐策略
+对于 50 帧窗口中 delay 发生明显漂移的情形：
+
+1. 用 PDP 追踪方法（非参数化 delay 轨迹估计）先画出各条脊线的 delay-time 轨迹；
+2. 在每段局部平稳段内运行 SAGE，其中窗口长度满足路径 delay 变化
+
+；
+
+3. 利用跨窗口的路径关联将路径轨迹拼接，并用 EKF 平滑参数轨迹。
+
+7. 问题六：垂直强带与瞬态干扰处理
+7.1 垂直强带的成因
+PDP 瀑布图中全 delay 同时增强的垂直亮带，可能来自：
+脉冲干扰（transient/burst interference）：外部 RF 干扰或测量系统内部噪声突发；
+
+ADC/RF 系统饱和：强干扰导致接收机非线性；
+
+发射机同步异常：个别帧的载频相噪突变。
+
+7.2 快照质量门控（Snapshot Gating）
+在 HRPE 前对快照进行质量检查，是处理瞬态干扰的标准方法：[^4]
+
+1. 噪声底归一化：对每帧快照估计噪声方差（用 delay 窗口外的区域），用此方差归一化功率，剔除
+超出统计阈值（如均值 + ）的帧。
+2. 快照能量检测：计算各帧 CIR 的总能量，剔除能量异常偏高或偏低的帧。
+3. Robust PDP 聚合：在形成参考 PDP 时使用中值（median），而非均值，减少异常帧的影响。
+4. 自适应协方差估计：RiMAX 的 DMC 协方差矩阵可在多帧上用 EMSE 方法鲁棒估计，自动降权异
+常帧。
+
+Chen 等人（2023）的 SAGE-MAP 算法中采用自适应协方差矩阵更新（Alpha 滤波），能在混合干扰
+场景下稳定估计。[^4]
+
+8. 对当前实现的修改建议
+8.1 信号模型修正（最高优先级）
+现状：h_l(t, τ) = α_l·exp(j2πν_l t)·δ(τ - τ_l)
+目标：h_l(t, τ) = α_l·exp(j2πν_l t)·g(τ - τ_l)
+
+其中
+
+为测量系统脉冲响应，通过 back-to-back 标定获取。在频域实现中，将系统频响
+
+入导向向量，使每条路径的信号响应包含脉冲形状和旁瓣。[9][4]
+
+乘
+
+8.2 引入 DMC 模型（高优先级）
+若不希望使用完整 RiMAX，可在现有 SAGE 框架中加入简化 DMC 预估步骤：
+
+1. 在第一次 SAGE 迭代前，从残差 PDP 估计 DMC 参数
+2. 构建 DMC 协方差矩阵
+3. 用
+
+；
+
+；
+
+替换 SAGE 中的白噪声协方差进行加权匹配滤波（Mahalanobis norm）；
+
+4. 在每次 SAGE 大迭代后更新 DMC 估计。
+Schieler 等人（2022）的工作表明，若 DMC 具有多模性，还需引入多模 DMC 估计（神经网络辅助初
+始化）。[^6]
+
+8.3 路径剪枝策略（高优先级）
+1. 在每次 SAGE/RiMAX 迭代后，计算每条路径的路径 SNR（用 FIM 对角元估计方差）；
+2. 剔除 SNR
+
+dB 的路径；
+
+3. 引入跨窗口轨迹持续时间阈值：仅保留在连续
+口伪径。
+
+（如
+
+）个窗口中都出现的路径，滤除单窗
+
+8.4 初始化改进（中优先级）
+1. 用多帧 robust PDP（中值聚合）找 delay 局部峰，过滤
+
+的旁瓣；
+
+2. 每个 delay 峰分别做局部 STFT 求 Doppler 初值；
+3. 先对 DMC 参数进行粗估，然后用 DMC 加权的 ML 函数做初始 specular 路径搜索。
+
+8.5 窗口策略（中优先级）
+1. 分析各条脊线的 delay 漂移速率（从 PDP 追踪获取），确定满足局部平稳的最大窗口长度；
+2. 对快速漂移的路径，采用短窗 + 跨窗路径关联或 EKF 追踪；
+3. 在快照质量门控阶段剔除垂直强带帧，再运行 HRPE。
+
+9. 核心参考文献索引
+文献
+
+贡献
+
+关键内容
+信号模型、E/M-step、单天线 delay-Doppler
+
+Fleury et al., IEEE JSAC 1999[^1]
+
+SAGE 信道估计原创方法
+
+Richter, PhD thesis, 2005[^4]
+
+RiMAX 算法、SMC+DMC
+联合 ML
+
+完整 RiMAX 推导、FIM 路径 SNR、初始化、
+
+Landmann et al., IEEE TAP 2012[^7]
+
+数据模型不完整的影响
+
+脉冲形状/DMC 缺失导致的 HRPE 偏差
+
+Landmann et al., 2009[^8]
+
+HRPE 常见陷阱
+
+旁瓣吸附、初始化偏差的系统分析
+
+Schieler et al., arXiv 2022[^6]
+
+多模 DMC 估计
+
+Kaske & Thoma, EuCAP 2015 / Power
+angular DMC (IEEE 2018)[^20]
+
+DMC 功率角度分布建模
+
+多聚类 DMC + RiMAX，von Mises 分布
+
+Richter et al., SPAWC 2006[^21]
+
+DMC 追踪
+
+扩散散射的分布式 DMC 追踪算法
+
+Salmi et al., IEEE TSP 2005[^17]
+
+MPC 状态空间追踪
+
+Kalman 滤波、birth-death 过程
+
+Salmi et al., IEEE TSP 2009[^16]
+
+MIMO MPC 检测追踪
+
+变维 Kalman（EKF/UKF）
+
+Wang et al., IEEE TWC 2017[^15]
+
+V2V 时变信道 HRPE
+
+滑动窗口 + RiMAX，时变 delay-Doppler
+
+Chen et al., arXiv 2023[^4]
+
+城市 LTE 宽带信道 RiMAX
+
+SAGE-MAP 干扰对消 + 速度辅助 RiMAX
+
+Wang et al., arXiv 2019[^9]
+
+mmWave sounder RiMAX
+标定
+
+估计
+
+DMC 模型
+
+神经网络辅助 DMC 初始化、多模 DMC 对
+
+specular 估计的影响
+
+系统响应纳入 RiMAX 基矩阵
+
+UWB-RiMAX, EURASIP 2018[^5]
+
+超宽带 RiMAX 扩展
+
+频段内 SMC/DMC 参数追踪、UWB 下 DMC
+功率占比
+
+Shutin et al., IEEE TSP 2011[^13]
+
+稀疏贝叶斯 SAGE
+
+自动模型阶次选择，相关向量自动剪枝
+
+10. 小结：修改路线图
+针对当前的实现，推荐按以下优先级进行修改：
+
+1. （立即）修正路径原子模型：将系统脉冲响应
+
+纳入路径信号模型，消除主径吸附的根本原
+
+因。
+
+2. （短期）引入 DMC 模型：即使是简化的指数衰减 DMC，也能显著减少 specular 路径估计中
+DMC 能量的"污染"；全面实现 RiMAX 协方差加权为最佳方案。
+3. （短期）FIM-based 路径 SNR 剪枝：替换简单功率阈值，剔除不可靠路径。
+4. （中期）快照质量门控：在 HRPE 前过滤瞬态干扰帧。
+5. （中期）改进初始化：DMC 协方差加权的逐步 ML 路径搜索，结合 PDP 辅助 delay 初值。
+6. （中期）时变 delay 处理：分析局部平稳窗口长度，引入跨窗路径关联或 EKF 追踪。
+
+References
+1. Channel parameter estimation in mobile radio environments using the SAGE algorithm
+2. High-resolution channel parameter estimation for MIMO applications using the SAGE algorithm
+3. An extension of the RiMAX multipath estimation algorithm for ultra-wideband channel modeling - ...an
+indoor environment, which indicate a strong presence of DMC and thus diffuse scattering.
+The D...
+4. High-Resolution Channel Sounding and Parameter Estimation in Multi-Site
+Cellular Networks - Accurate understanding of electromagnetic propagation properties in
+real
+environments is necessary f...
+5. An extension of the RiMAX multipath estimation algorithm for ultra-wideband channel modeling - This
+work presents an extension of the high-resolution RiMAX multipath estimation algorithm,
+enablin...
+6. Estimating Multi-Modal Dense Multipath Components using Auto-Encoders - ...estimation algorithm
+for radio channel
+measurements exhibiting a mixture of independent Dense Mul...
+7. Impact of Incomplete and Inaccurate Data Models on High Resolution Parameter Estimation in
+Multidimensional Channel Sounding
+8. Common Pitfalls in Multidimensional High Resolution Channel Parameter Estimation
+9. Enable Super-resolution Parameter Estimation for Mm-wave Channel
+Sounding - ...sounders with phased arrays to perform super-resolution parameter
+estimation,
+i.e., determine the...
+10. DSS-o-SAGE: Direction-Scan Sounding-Oriented SAGE Algorithm for Channel Parameter Estimation in
+mmWave and THz Bands - Investigation of millimeter-wave (mmWave) and Terahertz (THz)
+channels relies on channel measurement...
+
+11. High-Resolution Parameter Estimation for Wideband Radio Channel Sounding - Multidimensional
+channel sounding measures the geometrical structure of mobile radio propagation. Th...
+12. Multipath Parameter Estimation from OFDM Signals in Mobile Channels - We study multipath
+parameter estimation from orthogonal frequency division multiplex signals transmi...
+13. Sparse Variational Bayesian SAGE Algorithm With Application to the Estimation of Multipath Wireless
+Channels
+14. Model Order Selection for Multipath MIMO Channels Using the Benjamini-Hochberg Procedure
+15. High-Resolution Parameter Estimation for Time-Varying Double Directional V2V Channel
+16. Detection and Tracking of MIMO Propagation Path Parameters Using State-Space Approach
+17. State-space approach to propagation path parameter estimation and tracking
+18. State-Space Modeling and Propagation Parameter Tracking: Multitarget tracking based approach
+19. Grant-Free Random Access in Uplink LEO Satellite Communications with
+OFDM - ...antennas, where orthogonal frequency division multiplexing (OFDM)
+modulation is adopted. To comba...
+20. Modeling the Power Angular Profile of Dense Multipath Components Using Multiple Clusters - In this
+paper, the power angular profile (PAP) of the dense multipath components (DMCs) was
+analyzed...
+21. An Algorithm for Estimation and Tracking of Distributed Diffuse Scattering in Mobile Radio Channels
+
+

@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>V2V信道测量数据离线分析平台</title>
+  <link rel="stylesheet" href="/static/styles.css?v=20260614-compact-map" />
+  <link rel="stylesheet" href="/static/leaflet.css" />
+  <script src="/static/echarts.min.js"></script>
+  <script src="/static/leaflet.js"></script>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div>
+        <div class="eyebrow">Channel Measurement Offline Workbench</div>
+        <h1>V2V信道测量数据离线分析平台</h1>
+      </div>
+      <div class="status-strip">
+        <span id="backendStatus" class="status-pill warning">后端检查中</span>
+        <span id="datasetStatus" class="status-pill muted">数据未加载</span>
+        <select id="datasetSelect" class="dataset-select" aria-label="选择示例数据集"></select>
+      </div>
+    </header>
+
+    <aside class="sidebar panel-scroll">
+      <section class="control-card">
+        <h2>数据导入</h2>
+        <div class="file-row" data-kind="rx">
+          <label>Rx 数据</label>
+          <input id="rxPath" readonly value="等待选择或加载示例" />
+          <button id="rxChooseBtn" class="secondary-btn">选择文件</button>
+          <span id="rxLoadState" class="load-dot pending"></span>
+        </div>
+        <div class="file-row" data-kind="calibration">
+          <label>校准数据</label>
+          <input id="calPath" readonly value="可选" />
+          <button id="calChooseBtn" class="secondary-btn">选择文件</button>
+          <span id="calLoadState" class="load-dot pending"></span>
+        </div>
+        <div class="file-row" data-kind="txgps">
+          <label>Tx GPS</label>
+          <input id="txGpsPath" readonly value="等待加载" />
+          <button id="txGpsChooseBtn" class="secondary-btn">选择文件</button>
+          <span id="txGpsLoadState" class="load-dot pending"></span>
+        </div>
+        <input id="hiddenFileInput" type="file" accept=".json,.bin,.txt" hidden />
+        <button id="loadDefaultBtn" class="primary-btn full-width">加载默认样例数据</button>
+      </section>
+
+      <section class="control-card">
+        <h2>分析选项</h2>
+        <label class="check-row"><input id="applyCalibration" type="checkbox" /> 做校准</label>
+        <label class="check-row"><input id="showTrackLines" type="checkbox" checked /> 显示轨迹线</label>
+        <div class="radio-group">
+          <label><input type="radio" name="txMode" value="static" checked /> Tx 静止</label>
+          <label><input type="radio" name="txMode" value="moving" /> Tx 运动</label>
+        </div>
+        <label class="field-label" for="sceneSelect">场景类型</label>
+        <select id="sceneSelect">
+          <option value="v2v">V2V 动态</option>
+          <option value="static-ota">静态 OTA</option>
+          <option value="b2b">B2B 校准</option>
+          <option value="campus">校园道路</option>
+        </select>
+      </section>
+
+      <section class="control-card playback-card">
+        <h2>回放控制</h2>
+        <input id="frameSlider" type="range" min="0" max="0" value="0" />
+        <div class="transport">
+          <button id="prevFrameBtn">上一帧</button>
+          <button id="playPauseBtn" class="primary-btn">播放</button>
+          <button id="nextFrameBtn">下一帧</button>
+        </div>
+        <dl class="compact-kv">
+          <div><dt>当前帧</dt><dd id="currentFrameLabel">0 / 0</dd></div>
+          <div><dt>当前时间</dt><dd id="currentTimeLabel">0.000 s</dd></div>
+          <div><dt>总时长</dt><dd id="durationLabel">0.000 s</dd></div>
+          <div><dt>帧率</dt><dd id="frameRateLabel">-- Hz</dd></div>
+        </dl>
+      </section>
+    </aside>
+
+    <main class="main-content panel-scroll">
+      <section class="analysis-grid">
+        <article class="chart-card"><h3>CIR 瀑布图 / 时延-功率</h3><div id="cirWaterfallChart" class="chart"></div></article>
+        <article class="chart-card"><h3>Doppler 谱瀑布图 / Delay 平均</h3><div id="dpsdChart" class="chart"></div></article>
+        <article class="chart-card music-track-card"><h3>MPC Delay-Time (SAGE B2B calibrated)</h3><img id="mpcPng" class="chart music-track-chart" style="object-fit:contain; background:#f8fbff; width:100%; height:100%;" alt="MPC Delay-Time" /></article>
+      </section>
+
+      <section class="bottom-grid">
+        <section class="map-card chart-card compact-map-card">
+          <div class="card-title-row">
+            <h2>GPS 轨迹与 Tx/Rx 位置</h2>
+            <span id="mapLegend" class="legend">蓝线=Rx轨迹，红点=Tx，绿点=当前Rx</span>
+          </div>
+          <div id="mapPanel" class="map-panel compact-map-panel">
+            <div id="mapLeaflet" class="leaflet-map"></div>
+            <svg id="mapSvg" viewBox="0 0 1000 420" preserveAspectRatio="none"></svg>
+          </div>
+        </section>
+        <article class="chart-card"><h3>当前帧 CIR/PDP 曲线</h3><div id="pdpChart" class="chart small-chart"></div></article>
+        <article class="chart-card stats-card"><h3>统计参数</h3><table id="statsTable"><tbody></tbody></table></article>
+      </section>
+    </main>
+
+  </div>
+
+  <script src="/static/app.js?v=20260614-compact-map"></script>
+</body>
+</html>
