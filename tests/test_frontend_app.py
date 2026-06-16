@@ -100,6 +100,7 @@ def test_static_frontend_files_exist_with_real_event_hooks():
         "updateDopplerTime",
         "updateStatusBar",
         "detectDisplayStep",
+        "updatePlaybackReadout",
         "buildFrameIndex",
         "robustRange",
         "parseCarrier",

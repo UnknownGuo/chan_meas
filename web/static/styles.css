@@ -95,7 +95,8 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 #analyzeProgressFill { height: 100%; width: 0%; background: var(--blue); transition: width 0.3s ease; }
 #analyzeProgressLabel { display: block; margin-top: 6px; font-size: 12px; color: var(--muted); }
 
-.playback-card input[type="range"] { width: 100%; margin: 14px 0; }
+.playback-card input[type="range"] { width: 100%; margin: 14px 0 6px; }
+.playback-readout { text-align: center; font-size: 13px; color: var(--muted); font-weight: 600; margin-bottom: 10px; }
 .transport { display: grid; gap: 8px; }
 .jump-row { display: grid; grid-template-columns: 1fr auto; gap: 7px; }
 .jump-row input { border: 1px solid var(--line); border-radius: 7px; padding: 8px; background: #fbfdff; }

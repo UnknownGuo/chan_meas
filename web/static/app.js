@@ -84,6 +84,8 @@ function resetUI() {
   slider.max = '0'; slider.value = '0';
   DATASET_DEPENDENT_CONTROLS.forEach(id => { const el = document.getElementById(id); if (el) el.disabled = true; });
   document.querySelectorAll('.export-fig-btn[data-chart]').forEach(b => { b.disabled = true; });
+  const label = document.getElementById('playbackTimeLabel');
+  if (label) label.textContent = '-- s / -- s';
 }
 
 // ---------------- 布局初始化 ----------------
@@ -347,6 +349,27 @@ function currentEntry() {
   return map.get(orderedFrames[idx]) || null;
 }
 
+function totalTimeSec() {
+  const { orderedFrames, map } = AppState.frameIndex;
+  if (!orderedFrames.length) return null;
+  const lastEntry = map.get(orderedFrames[orderedFrames.length - 1]);
+  return Number(lastEntry?.payload?.timeSec ?? null);
+}
+
+function updatePlaybackReadout() {
+  const label = document.getElementById('playbackTimeLabel');
+  if (!label) return;
+  const total = totalTimeSec();
+  const cur = currentEntry()?.payload?.timeSec;
+  if (total === null || !Number.isFinite(total) || !Number.isFinite(cur)) {
+    label.textContent = '-- s / -- s';
+    return;
+  }
+  label.textContent = `${Number(cur).toFixed(1)} s / ${total.toFixed(1)} s`;
+  const jumpInput = document.getElementById('jumpInput');
+  if (jumpInput) { jumpInput.max = String(total); jumpInput.placeholder = `跳转秒 (0–${total.toFixed(0)})`; }
+}
+
 function syncFrame(sliderValue) {
   if (AppState.uiState !== 'READY' && AppState.uiState !== 'LOADING_DATA') return;
   const maxV = Number(document.getElementById('frameSlider').max || 0);
@@ -355,6 +378,7 @@ function syncFrame(sliderValue) {
   updatePdpCurve();
   updateMapPanel();
   updateStatusBar();
+  updatePlaybackReadout();
 }
 
 function updatePdpCurve() {
