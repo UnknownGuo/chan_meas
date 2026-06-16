@@ -8,6 +8,9 @@ so it can later be replaced/extended by real upload and processing endpoints.
 from __future__ import annotations
 
 import json
+import threading
+import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 import urllib.request
@@ -16,6 +19,9 @@ import numpy as np
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
+
+from src.pipeline.analyze import analyze_one
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 WEB_DIR = PROJECT_ROOT / "web"
@@ -24,6 +30,72 @@ DATASET_DIR = PROJECT_ROOT / "data" / "ui_samples"
 TILE_CACHE_DIR = PROJECT_ROOT / "data" / "tile_cache" / "esri_imagery"
 PREFERRED_DATASET_NAME = "0m-0m-all-firstantenna-xiaoquan_b2b_adaptive_sage.json"
 LEGACY_DEFAULT_DATASET_NAME = "zjk_last_measurement_max15_full.json"
+
+# 原始测量 .bin 所在目录；与 src/ui_dataset.py 默认 Tx GPS 路径同源（既有约定，未改架构）。
+RAW_BIN_DIRS = [Path("/mnt/win_data/data_mea/zjk_mea")]
+SAGE_OUTPUTS_DIR = Path("/mnt/win_data/data_mea/zjk_mea/sage_outputs")
+ADAPTIVE_SUMMARY_PATH = SAGE_OUTPUTS_DIR / "adaptive_w20_step100" / "adaptive_summary.json"
+
+# ---- compute-or-cache job state（单 worker 假设，见实现规格 §4.1）----
+JOB_LOCK = threading.Lock()
+JOBS: dict[str, dict[str, Any]] = {}
+RUNNING_BY_STEM: dict[str, str] = {}
+_EXECUTOR = ThreadPoolExecutor(max_workers=1)
+
+
+def normalize_stem(name: str) -> str:
+    """Strip path and .bin suffix (case-insensitive); reject path traversal."""
+    if not name or Path(name).name != name:
+        raise ValueError(f"Invalid bin file name: {name!r}")
+    stem = name
+    if stem.lower().endswith(".bin"):
+        stem = stem[: -len(".bin")]
+    return stem
+
+
+def _resolve_raw_bin(name: str, search_dirs: list[Path] = RAW_BIN_DIRS) -> Path:
+    if not name or Path(name).name != name:
+        raise ValueError(f"Invalid bin file name: {name!r}")
+    for d in search_dirs:
+        candidate = d / name
+        if candidate.exists():
+            return candidate
+    raise FileNotFoundError(f"未找到原始测量文件: {name}")
+
+
+class AnalyzeRequest(BaseModel):
+    rxBinName: str
+    calBinName: str | None = None
+    carrierHz: float = Field(gt=0)
+    txMode: str = "static"
+    txLat: float | None = None
+    txLon: float | None = None
+    txAlt: float | None = None
+    force: bool = False
+
+
+def _run_analysis(job_id: str, stem: str, req: AnalyzeRequest, dataset_dir: Path) -> None:
+    try:
+        rx_path = _resolve_raw_bin(req.rxBinName)
+        cal_path = _resolve_raw_bin(req.calBinName) if req.calBinName else None
+        analyze_one(
+            rx_path,
+            carrier_hz=req.carrierHz,
+            out_dir=dataset_dir,
+            cal_bin_path=cal_path,
+            tx_mode=req.txMode,
+            tx_lat=req.txLat,
+            tx_lon=req.txLon,
+            tx_alt=req.txAlt,
+        )
+        with JOB_LOCK:
+            JOBS[job_id] = {"status": "done", "progress": 100, "datasetName": f"{stem}_b2b_adaptive_sage.json"}
+    except Exception as exc:  # noqa: BLE001
+        with JOB_LOCK:
+            JOBS[job_id] = {"status": "error", "progress": 0, "detail": str(exc)}
+    finally:
+        with JOB_LOCK:
+            RUNNING_BY_STEM.pop(stem, None)
 
 
 def list_dataset_files(dataset_dir: Path = DATASET_DIR) -> list[str]:
@@ -60,7 +132,23 @@ def load_dataset_file(name: str, dataset_dir: Path = DATASET_DIR) -> dict[str, A
         raise ValueError(f"Dataset must be a JSON object: {name}")
     if "jointDelayDoppler" not in payload and "musicMpc" in payload:
         payload["jointDelayDoppler"] = payload["musicMpc"]
+    _merge_adaptive_summary(payload)
     return payload
+
+
+def _merge_adaptive_summary(payload: dict[str, Any]) -> None:
+    """Merge adaptive_summary.json entry (by bin name) into meta.summary (HIGH-3)."""
+    bin_name = payload.get("meta", {}).get("name")
+    if not bin_name or not ADAPTIVE_SUMMARY_PATH.exists():
+        return
+    try:
+        summary = json.loads(ADAPTIVE_SUMMARY_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    for entry in summary.get("files", []):
+        if entry.get("file") == bin_name:
+            payload.setdefault("meta", {})["summary"] = entry
+            return
 
 
 def _dpsd_sidecar_path(name: str, dataset_dir: Path = DATASET_DIR) -> Path:
@@ -167,6 +255,32 @@ def create_app(dataset_dir: Path = DATASET_DIR) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/api/analyze")
+    def analyze(req: AnalyzeRequest) -> dict[str, Any]:
+        try:
+            stem = normalize_stem(req.rxBinName)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        json_path = dataset_dir / f"{stem}_b2b_adaptive_sage.json"
+        with JOB_LOCK:
+            if stem in RUNNING_BY_STEM:
+                return {"status": "running", "jobId": RUNNING_BY_STEM[stem]}
+            if json_path.exists() and not req.force:
+                return {"status": "ready", "datasetName": json_path.name}
+            job_id = uuid.uuid4().hex
+            JOBS[job_id] = {"status": "running", "progress": 0}
+            RUNNING_BY_STEM[stem] = job_id
+            _EXECUTOR.submit(_run_analysis, job_id, stem, req, dataset_dir)
+        return {"status": "running", "jobId": job_id}
+
+    @app.get("/api/analyze/status/{job_id}")
+    def analyze_status(job_id: str) -> dict[str, Any]:
+        with JOB_LOCK:
+            job = JOBS.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail=f"Unknown jobId: {job_id}")
+        return job
 
     return app
 

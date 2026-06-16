@@ -1,99 +1,100 @@
-// ECharts 优先从 CDN 加载；如果离线或 CDN 不可达，启用一个轻量 canvas fallback，
-// 保证本地工程调试时页面仍然能显示图表占位/基础曲线，而不是整页报错。
+// 信道测量分析软件 前端逻辑
+// 设计: docs/specs/2026-06-16-channel-analysis-ui-implementation-spec.md
+
+// ---- ECharts 离线兜底（本地 echarts.min.js 缺失时不至于整页崩） ----
 if (!window.echarts) {
   window.echarts = {
     init(container) {
-      const canvas = document.createElement('canvas');
-      canvas.width = Math.max(320, container.clientWidth || 640);
-      canvas.height = Math.max(180, container.clientHeight || 260);
-      canvas.style.width = '100%';
-      canvas.style.height = '100%';
-      container.innerHTML = '';
-      container.appendChild(canvas);
-      const chart = {
-        canvas,
-        option: null,
-        setOption(option) { this.option = option; drawFallbackChart(canvas, option); },
-        resize() {
-          canvas.width = Math.max(320, container.clientWidth || 640);
-          canvas.height = Math.max(180, container.clientHeight || 260);
-          if (this.option) drawFallbackChart(canvas, this.option);
-        }
-      };
-      return chart;
+      container.innerHTML = '<div style="padding:12px;color:#66788a;font-size:13px">ECharts 未加载（缺 /static/echarts.min.js）</div>';
+      return { setOption() {}, resize() {}, getDataURL() { return ''; }, dispatchAction() {} };
     }
   };
 }
 
-function drawFallbackChart(canvas, option) {
-  const ctx = canvas.getContext('2d');
-  const w = canvas.width, h = canvas.height;
-  ctx.clearRect(0, 0, w, h);
-  ctx.fillStyle = '#f8fbff';
-  ctx.fillRect(0, 0, w, h);
-  ctx.strokeStyle = '#d8e2ee';
-  ctx.strokeRect(0.5, 0.5, w - 1, h - 1);
-  ctx.fillStyle = '#66788a';
-  ctx.font = '13px sans-serif';
-  ctx.fillText('离线图表 fallback（CDN ECharts 未加载）', 14, 22);
-  const series = option?.series?.[0] || {};
-  const data = series.data || [];
-  if (!data.length) return;
-  const plot = { x: 42, y: 36, w: w - 58, h: h - 55 };
-  if (series.type === 'heatmap') {
-    const maxX = Math.max(...data.map(d => d[0]), 1), maxY = Math.max(...data.map(d => d[1]), 1);
-    data.forEach(d => {
-      const v = Number(d[2]);
-      const t = Math.max(0, Math.min(1, (v + 110) / 110));
-      ctx.fillStyle = `rgb(${Math.round(30 + 220 * t)}, ${Math.round(80 + 120 * t)}, ${Math.round(150 - 80 * t)})`;
-      ctx.fillRect(plot.x + d[0] / maxX * plot.w, plot.y + d[1] / maxY * plot.h, Math.max(1, plot.w / (maxX + 1)), Math.max(1, plot.h / (maxY + 1)));
-    });
-  } else if (series.type === 'scatter') {
-    const xs = data.map(d => Number(d[0])), ys = data.map(d => Number(d[1]));
-    const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
-    ctx.fillStyle = '#2474d2';
-    data.forEach(d => {
-      const x = plot.x + (Number(d[0]) - minX) / Math.max(maxX - minX, 1e-9) * plot.w;
-      const y = plot.y + plot.h - (Number(d[1]) - minY) / Math.max(maxY - minY, 1e-9) * plot.h;
-      ctx.beginPath(); ctx.arc(x, y, 3, 0, Math.PI * 2); ctx.fill();
-    });
-  } else if (series.type === 'line') {
-    const vals = data.map(Number); const min = Math.min(...vals), max = Math.max(...vals);
-    ctx.strokeStyle = '#2474d2'; ctx.lineWidth = 2; ctx.beginPath();
-    vals.forEach((v, i) => {
-      const x = plot.x + i / Math.max(vals.length - 1, 1) * plot.w;
-      const y = plot.y + plot.h - (v - min) / Math.max(max - min, 1e-9) * plot.h;
-      i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
-    }); ctx.stroke();
-  } else if (series.type === 'bar') {
-    const vals = data.map(Number); const max = Math.max(...vals, 1);
-    ctx.fillStyle = '#2474d2';
-    vals.forEach((v, i) => ctx.fillRect(plot.x + i * plot.w / vals.length, plot.y + plot.h - v / max * plot.h, plot.w / vals.length * 0.72, v / max * plot.h));
-  }
+// ---- colormap：色标固定，取值范围自适应（不写死 dB） ----
+const JET_STOPS = ['#00008f', '#0000ff', '#0080ff', '#00ffff', '#80ff80', '#ffff00', '#ff8000', '#ff0000', '#800000'];
+const HOT_STOPS = ['#000000', '#3b0000', '#8f0000', '#ff3000', '#ff8000', '#ffd000', '#ffff60', '#ffffff'];
+
+function robustRange(values, loPct = 1, hiPct = 99) {
+  const sorted = values.filter(Number.isFinite).slice().sort((a, b) => a - b);
+  if (!sorted.length) return [0, 1];
+  const q = p => sorted[Math.min(sorted.length - 1, Math.max(0, Math.round(p / 100 * (sorted.length - 1))))];
+  let lo = q(loPct), hi = q(hiPct);
+  if (hi - lo < 1e-6) hi = lo + 1;
+  return [lo, hi];
+}
+
+// ---- 帧间隔自检测 + 降采样到 ~1 CIR/秒 ----
+function detectDisplayStep(dataset) {
+  const rx = dataset.rxGps || [];
+  if (rx.length < 2) return { decim: 1, dtSec: 1 };
+  const dts = [];
+  for (let i = 1; i < rx.length; i++) dts.push(Number(rx[i].timeSec) - Number(rx[i - 1].timeSec));
+  dts.sort((a, b) => a - b);
+  const medDt = dts[Math.floor(dts.length / 2)] || 1;
+  const decim = medDt > 0 && medDt < 1 ? Math.max(1, Math.round(1 / medDt)) : 1;
+  return { decim, dtSec: medDt };
+}
+
+// ---- frame-id 映射（不依赖数组下标对齐） ----
+function buildFrameIndex(dataset) {
+  const map = new Map();
+  (dataset.framePayloads || []).forEach(p => map.set(p.frame, { payload: p }));
+  (dataset.rxGps || []).forEach(g => { if (map.has(g.frame)) map.get(g.frame).gps = g; });
+  const orderedFrames = Array.from(map.keys()).sort((a, b) => a - b);
+  return { map, orderedFrames };
 }
 
 const AppState = {
   dataset: null,
-  currentFrame: 0,
+  datasetName: null,
+  uiState: 'IDLE',          // IDLE | ANALYZING | LOADING_DATA | READY | ERROR
+  frameIndex: { map: new Map(), orderedFrames: [] },
+  decim: 1,
+  dtSec: 1,
+  sliderValue: 0,
   playing: false,
   timer: null,
+  cursor: false,
   charts: {},
-  dpsdCache: new Map(),
-  dpsdRequestToken: 0,
-  datasetName: null,
   leafletMap: null,
   leafletLayers: {},
   selectedFileRole: null,
+  rxBinName: null,
+  calBinName: null,
+  pollTimer: null,
 };
 window.AppState = AppState;
 
+const DATASET_DEPENDENT_CONTROLS = ['frameSlider', 'playPauseBtn', 'jumpInput', 'jumpBtn', 'exportCsvBtn'];
+
+function setUiState(state) {
+  AppState.uiState = state;
+  const ready = state === 'READY';
+  DATASET_DEPENDENT_CONTROLS.forEach(id => { const el = document.getElementById(id); if (el) el.disabled = !ready; });
+  document.querySelectorAll('.export-fig-btn[data-chart]').forEach(b => { b.disabled = !ready; });
+}
+
+function resetUI() {
+  // 只清状态/禁用控件，不改 AppState.uiState —— 状态转换由调用方的 setUiState() 决定，
+  // 否则会覆盖调用方刚设好的状态，导致 syncFrame() 的状态门禁错误地拦截首次加载。
+  stopPlayback();
+  AppState.sliderValue = 0;
+  const slider = document.getElementById('frameSlider');
+  slider.max = '0'; slider.value = '0';
+  DATASET_DEPENDENT_CONTROLS.forEach(id => { const el = document.getElementById(id); if (el) el.disabled = true; });
+  document.querySelectorAll('.export-fig-btn[data-chart]').forEach(b => { b.disabled = true; });
+}
+
+// ---------------- 布局初始化 ----------------
 function initLayout() {
-  AppState.charts.cir = echarts.init(document.getElementById('cirWaterfallChart'));
-  AppState.charts.dpsd = echarts.init(document.getElementById('dpsdChart'));
+  AppState.charts.pdpWaterfall = echarts.init(document.getElementById('pdpWaterfallChart'));
+  AppState.charts.delayTime = echarts.init(document.getElementById('delayTimeChart'));
+  AppState.charts.dopplerTime = echarts.init(document.getElementById('dopplerTimeChart'));
   AppState.charts.pdp = echarts.init(document.getElementById('pdpChart'));
   initLeafletMap();
   window.addEventListener('resize', () => {
-    Object.values(AppState.charts).forEach(chart => chart.resize());
+    Object.values(AppState.charts).forEach(c => c.resize());
     if (AppState.leafletMap) AppState.leafletMap.invalidateSize();
   });
 }
@@ -103,364 +104,344 @@ function initLeafletMap() {
   const el = document.getElementById('mapLeaflet');
   if (!el) return;
   AppState.leafletMap = L.map(el, { preferCanvas: true, zoomControl: true });
-  L.tileLayer('/tiles/base/{z}/{x}/{y}.jpg', {
-    maxZoom: 19,
-    attribution: 'Tiles &copy; Esri, OpenStreetMap contributors',
-  }).addTo(AppState.leafletMap);
+  L.tileLayer('/tiles/base/{z}/{x}/{y}.jpg', { maxZoom: 19, attribution: 'Tiles &copy; Esri' }).addTo(AppState.leafletMap);
   AppState.leafletMap.setView([40.3032, 115.7719], 17);
 }
 
+// ---------------- 控件绑定 ----------------
 function bindControls() {
-  document.getElementById('loadDefaultBtn').addEventListener('click', () => loadDatasetFromApi('default'));
-  document.getElementById('datasetSelect').addEventListener('change', event => loadDatasetFromApi(event.target.value));
-  document.getElementById('frameSlider').addEventListener('input', event => syncFrame(Number(event.target.value)));
+  document.getElementById('datasetSelect').addEventListener('change', e => loadDatasetFromApi(e.target.value));
+  document.getElementById('frameSlider').addEventListener('input', e => syncFrame(Number(e.target.value)));
   document.getElementById('playPauseBtn').addEventListener('click', togglePlayback);
-  document.getElementById('prevFrameBtn').addEventListener('click', () => syncFrame(AppState.currentFrame - 1));
-  document.getElementById('nextFrameBtn').addEventListener('click', () => syncFrame(AppState.currentFrame + 1));
-  document.getElementById('showTrackLines').addEventListener('change', updateMapPanel);
-  document.getElementById('sceneSelect').addEventListener('change', updateOverview);
-  document.querySelectorAll('input[name="txMode"], #applyCalibration').forEach(el => el.addEventListener('change', updateOverview));
+  document.getElementById('jumpBtn').addEventListener('click', jumpToSeconds);
+  document.getElementById('cursorToggle').addEventListener('change', e => { AppState.cursor = e.target.checked; rerenderAll(); });
 
-  const hiddenFileInput = document.getElementById('hiddenFileInput');
-  hiddenFileInput.addEventListener('change', event => {
-    const file = event.target.files[0];
-    if (!file) return;
-    if (AppState.selectedFileRole === 'rx') loadRxData(file);
-    if (AppState.selectedFileRole === 'calibration') loadCalibrationData(file);
-    if (AppState.selectedFileRole === 'txgps') loadTxGpsData(file);
-    hiddenFileInput.value = '';
-  });
+  document.getElementById('importBtn').addEventListener('click', doImport);
+  document.getElementById('analyzeBtn').addEventListener('click', () => runAnalyze(false));
+  document.getElementById('reanalyzeBtn').addEventListener('click', () => runAnalyze(true));
+
+  document.querySelectorAll('input[name="txMode"]').forEach(el => el.addEventListener('change', updateTxModeUI));
   document.getElementById('rxChooseBtn').addEventListener('click', () => chooseLocalFile('rx'));
   document.getElementById('calChooseBtn').addEventListener('click', () => chooseLocalFile('calibration'));
-  document.getElementById('txGpsChooseBtn').addEventListener('click', () => chooseLocalFile('txgps'));
+  document.getElementById('hiddenFileInput').addEventListener('change', onLocalFileChosen);
+
+  document.querySelectorAll('.export-fig-btn[data-chart]').forEach(btn =>
+    btn.addEventListener('click', () => exportChartPng(btn.dataset.chart)));
+  document.getElementById('exportCsvBtn').addEventListener('click', exportPdpCsv);
 }
 
+function chooseLocalFile(role) { AppState.selectedFileRole = role; document.getElementById('hiddenFileInput').click(); }
+
+function onLocalFileChosen(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  if (AppState.selectedFileRole === 'rx') {
+    AppState.rxBinName = file.name;
+    document.getElementById('rxPath').value = file.name;
+  } else if (AppState.selectedFileRole === 'calibration') {
+    AppState.calBinName = file.name;
+    document.getElementById('calPath').value = file.name;
+  }
+  event.target.value = '';
+}
+
+function updateTxModeUI() {
+  const moving = document.querySelector('input[name="txMode"]:checked').value === 'moving';
+  document.getElementById('txStaticInputs').hidden = moving;
+  document.getElementById('txBinBtn').hidden = !moving;
+}
+
+// ---------------- 导入 / 分析 ----------------
+function doImport() {
+  if (!AppState.rxBinName) { alert('请先选择 Rx 数据'); document.querySelector('[data-kind="rx"]').classList.add('attn'); return; }
+  markLoaded('rxLoadState', true);
+  markLoaded('calLoadState', !!AppState.calBinName);   // 校准可选；未选保持 pending
+  document.getElementById('datasetStatus').textContent = '已导入，待分析';
+  document.getElementById('datasetStatus').className = 'status-pill warning';
+}
+
+function parseCarrier() {
+  const v = parseFloat(document.getElementById('carrierHzInput').value);
+  if (!Number.isFinite(v) || v <= 0) return null;
+  const unit = document.getElementById('carrierUnitSelect').value;
+  return unit === 'GHz' ? v * 1e9 : v * 1e6;
+}
+
+async function runAnalyze(force) {
+  if (!AppState.rxBinName) { alert('请先选择 Rx 数据'); return; }
+  const carrierHz = parseCarrier();
+  if (carrierHz === null) { alert('请填写载波频率（算 Doppler 用）'); document.getElementById('carrierHzInput').focus(); return; }
+  const txMode = document.querySelector('input[name="txMode"]:checked').value;
+  const body = {
+    rxBinName: AppState.rxBinName, calBinName: AppState.calBinName || null, carrierHz, txMode, force,
+    txLat: numOrNull('txLat'), txLon: numOrNull('txLon'), txAlt: numOrNull('txAlt'),
+  };
+  setUiState('ANALYZING');
+  showProgress(true, 0, '提交分析…');
+  try {
+    const res = await fetch('/api/analyze', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    if (!res.ok) throw new Error((await res.json()).detail || res.status);
+    const out = await res.json();
+    if (out.status === 'ready') { showProgress(false); await loadDatasetFromApi(out.datasetName); }
+    else if (out.status === 'running') pollAnalyze(out.jobId);
+  } catch (err) {
+    showProgress(false); setUiState('ERROR'); alert(`分析失败：${err.message}`);
+  }
+}
+
+function pollAnalyze(jobId) {
+  clearInterval(AppState.pollTimer);
+  AppState.pollTimer = setInterval(async () => {
+    try {
+      const res = await fetch(`/api/analyze/status/${jobId}`);
+      if (!res.ok) throw new Error(res.status);
+      const s = await res.json();
+      showProgress(true, s.progress || 0, `分析中… ${Math.round(s.progress || 0)}%`);
+      if (s.status === 'done') { clearInterval(AppState.pollTimer); showProgress(false); await loadDatasetFromApi(s.datasetName); }
+      else if (s.status === 'error') { clearInterval(AppState.pollTimer); showProgress(false); setUiState('ERROR'); alert(`分析失败：${s.detail || '未知错误'}`); }
+    } catch (err) {
+      clearInterval(AppState.pollTimer); showProgress(false); setUiState('ERROR'); alert(`分析状态查询失败：${err.message}`);
+    }
+  }, 1500);
+}
+
+function showProgress(show, pct = 0, label = '') {
+  document.getElementById('analyzeProgress').hidden = !show;
+  document.getElementById('analyzeProgressFill').style.width = `${pct}%`;
+  document.getElementById('analyzeProgressLabel').textContent = label;
+}
+
+// ---------------- 数据加载（原子、有序） ----------------
 async function loadDatasetList() {
-  const response = await fetch('/api/datasets');
-  const payload = await response.json();
+  const res = await fetch('/api/datasets');
+  const payload = await res.json();
   const select = document.getElementById('datasetSelect');
   select.innerHTML = '';
   payload.datasets.forEach(name => {
-    const option = document.createElement('option');
-    option.value = name;
-    option.textContent = name;
-    if (name === payload.default) option.selected = true;
-    select.appendChild(option);
+    const opt = document.createElement('option');
+    opt.value = name; opt.textContent = name;
+    if (name === payload.default) opt.selected = true;
+    select.appendChild(opt);
   });
 }
 
 async function checkBackend() {
   const status = document.getElementById('backendStatus');
   try {
-    const response = await fetch('/api/health');
-    const payload = await response.json();
+    const res = await fetch('/api/health');
+    const payload = await res.json();
     status.textContent = `后端正常 · ${payload.datasetCount} 个数据集`;
     status.className = 'status-pill ok';
-  } catch (error) {
-    status.textContent = '后端不可用，使用 mock 数据';
+  } catch (err) {
+    status.textContent = '后端不可用';
     status.className = 'status-pill warning';
-    loadMockData();
   }
 }
 
 async function loadDatasetFromApi(name = 'default') {
-  const response = await fetch(`/api/datasets/${encodeURIComponent(name)}`);
-  if (!response.ok) throw new Error(`dataset load failed: ${response.status}`);
-  const dataset = await response.json();
-  setDataset(dataset, name);
-}
+  setUiState('LOADING_DATA');
+  resetUI();
+  try {
+    const res = await fetch(`/api/datasets/${encodeURIComponent(name)}`);
+    if (!res.ok) throw new Error(`dataset load failed: ${res.status}`);
+    const dataset = await res.json();
+    AppState.dataset = dataset;
+    AppState.datasetName = name === 'default' ? (document.getElementById('datasetSelect').value || name) : name;
+    AppState.frameIndex = buildFrameIndex(dataset);
+    const step = detectDisplayStep(dataset);
+    AppState.decim = step.decim; AppState.dtSec = step.dtSec;
+    const slider = document.getElementById('frameSlider');
+    slider.max = String(Math.max(0, Math.floor((AppState.frameIndex.orderedFrames.length - 1) / AppState.decim)));
+    slider.value = '0'; AppState.sliderValue = 0;
 
-function loadMockData() {
-  const frames = 120;
-  const delayNs = Array.from({ length: 64 }, (_, i) => i * 20);
-  const timeSec = Array.from({ length: frames }, (_, i) => i / 100);
-  const powerDb = timeSec.map((_, f) => delayNs.map((_, d) => -80 + 42 * Math.exp(-Math.pow(d - (12 + f % 30), 2) / 90)));
-  const rxGps = timeSec.map((t, i) => ({ frame: i, timeSec: t, lat: 40.30316 + i * 1e-7, lon: 115.77190 + Math.sin(i / 15) * 3e-6, alt: 565 }));
-  const frameStats = timeSec.map((t, i) => ({ frame: i, timeSec: t, distanceM: 8 + i * 0.05, peakPowerDb: -35 + Math.sin(i / 7), peakDelayNs: 240 + Math.sin(i / 8) * 60, meanPowerDb: -78, rmsDelayNs: 36, pathCount: 3 }));
-  const mpcScatter = frameStats.flatMap(s => [0, 1, 2].map(p => ({ frame: s.frame, timeSec: s.timeSec, pathId: p + 1, delayNs: s.peakDelayNs + p * 70, dopplerHz: Math.sin(s.frame / 12 + p) * 18, powerDb: s.peakPowerDb - p * 6 })));
-  setDataset({
-    meta: { name: 'mock', frameRateHz: 100, numFrames: frames, bandwidthHz: 50e6, txMode: 'static' },
-    txGps: { lat: 40.303232, lon: 115.771857, alt: 561.41, source: 'mock' },
-    rxGps, frameStats,
-    framePayloads: frameStats.map(s => ({ frame: s.frame, stats: s, pdpCurve: { frame: s.frame, delayNs, powerDb: powerDb[s.frame], relative: false }, powerDistribution: [] })),
-    cirWaterfall: { delayNs, timeSec, powerDb },
-    dopplerDelay: { delayNs, dopplerHz: Array.from({ length: 48 }, (_, i) => -50 + i * 100 / 47), powerDb: Array.from({ length: 48 }, (_, r) => delayNs.map((_, c) => -90 + 20 * Math.exp(-Math.pow(c - 15, 2) / 60) * Math.exp(-Math.pow(r - 25, 2) / 30))) },
-    mpcScatter,
-    jointDelayDoppler: { tracks: mpcScatter },
-  }, 'mock');
-}
+    document.getElementById('datasetStatus').textContent = '数据已加载';
+    document.getElementById('datasetStatus').className = 'status-pill ok';
 
-function setDataset(dataset, sourceName) {
-  AppState.dataset = dataset;
-  AppState.datasetName = sourceName === 'default' ? (document.getElementById('datasetSelect').value || sourceName) : sourceName;
-  AppState.dpsdCache = new Map();
-  AppState.currentFrame = 0;
-  document.getElementById('datasetStatus').textContent = '数据已加载';
-  document.getElementById('datasetStatus').className = 'status-pill ok';
-  document.getElementById('rxPath').value = dataset.meta?.name || sourceName;
-  document.getElementById('txGpsPath').value = dataset.txGps?.source || 'dataset.txGps';
-  markLoaded('rxLoadState', true);
-  markLoaded('txGpsLoadState', true);
-  const maxFrame = Math.max(0, Number(dataset.meta?.numFrames || dataset.frameStats?.length || 1) - 1);
-  const slider = document.getElementById('frameSlider');
-  slider.max = String(maxFrame);
-  slider.value = '0';
-  updateCIRPlot();
-  updateDPSDPlot();
-  updateMusicPlot();
-  syncFrame(0);
-}
-
-function chooseLocalFile(role) {
-  AppState.selectedFileRole = role;
-  document.getElementById('hiddenFileInput').click();
-}
-
-// 后续真实接线点：这里可改成上传 .bin 到 FastAPI，再调用 Python 解析流水线。
-async function loadRxData(file) {
-  document.getElementById('rxPath').value = file.name;
-  markLoaded('rxLoadState', true);
-  if (file.name.endsWith('.json')) {
-    const dataset = JSON.parse(await file.text());
-    setDataset(dataset, file.name);
+    updatePdpWaterfall();
+    updateDelayTime();
+    updateDopplerTime();
+    syncFrame(0);
+    setUiState('READY');
+  } catch (err) {
+    setUiState('ERROR'); resetUI();
+    document.getElementById('datasetStatus').textContent = '数据加载失败';
+    document.getElementById('datasetStatus').className = 'status-pill warning';
+    console.error(err);
   }
 }
 
-function loadCalibrationData(file) {
-  document.getElementById('calPath').value = file.name;
-  markLoaded('calLoadState', true);
-  updateOverview();
+// ---------------- 汇总图（可交互，风格照参照图） ----------------
+function visualMapContinuous(range, colors) {
+  // 竖直色条放右侧，贴合 matplotlib 参照图的 colorbar 布局；calculable:false 只做静态展示
+  return { type: 'continuous', min: range[0], max: range[1], dimension: 2, calculable: false, orient: 'vertical', right: 6, top: 'middle', itemWidth: 14, itemHeight: 140, text: ['高', '低'], textGap: 6, inRange: { color: colors } };
 }
+function dataZoomXY() { return [{ type: 'inside' }, { type: 'inside', orient: 'vertical' }]; }
+function axisPointerOpt() { return AppState.cursor ? { axisPointer: { show: true, type: 'cross' } } : {}; }
 
-function loadTxGpsData(file) {
-  document.getElementById('txGpsPath').value = file.name;
-  markLoaded('txGpsLoadState', true);
-  updateOverview();
-}
-
-function markLoaded(id, loaded) {
-  document.getElementById(id).className = `load-dot ${loaded ? 'ok' : 'pending'}`;
-}
-
-function syncFrame(frameIndex) {
-  if (!AppState.dataset) return;
-  const maxFrame = Number(document.getElementById('frameSlider').max || 0);
-  AppState.currentFrame = Math.max(0, Math.min(maxFrame, frameIndex));
-  document.getElementById('frameSlider').value = String(AppState.currentFrame);
-  updatePlaybackLabels();
-  updateOverview();
-  updateMapPanel();
-  updatePDPPlot();
-  updateStatsPanel();
-}
-
-function updatePlaybackLabels() {
-  const ds = AppState.dataset;
-  const stats = frameStat();
-  const total = Number(ds.meta?.numFrames || ds.frameStats?.length || 1);
-  const frameRate = Number(ds.meta?.frameRateHz || 100);
-  const rawFrameRate = Number(ds.meta?.rawFrameRateHz || frameRate);
-  document.getElementById('currentFrameLabel').textContent = `${AppState.currentFrame} / ${Math.max(0, total - 1)}`;
-  document.getElementById('currentTimeLabel').textContent = `${Number(stats?.timeSec ?? AppState.currentFrame / frameRate).toFixed(3)} s`;
-  document.getElementById('durationLabel').textContent = `${((total - 1) / frameRate).toFixed(3)} s`;
-  document.getElementById('frameRateLabel').textContent = `${rawFrameRate.toFixed(1)} Hz`;
-}
-
-function togglePlayback() {
-  AppState.playing = !AppState.playing;
-  document.getElementById('playPauseBtn').textContent = AppState.playing ? '暂停' : '播放';
-  if (AppState.playing) {
-    AppState.timer = setInterval(() => {
-      const maxFrame = Number(document.getElementById('frameSlider').max || 0);
-      syncFrame(AppState.currentFrame >= maxFrame ? 0 : AppState.currentFrame + 1);
-    }, 120);
-  } else {
-    clearInterval(AppState.timer);
-  }
-}
-
-function updateOverview() {
-  const overview = document.getElementById('overviewList');
-  if (!AppState.dataset || !overview) return;
-  const s = frameStat();
-  const scene = document.getElementById('sceneSelect').selectedOptions[0].textContent;
-  const txMode = document.querySelector('input[name="txMode"]:checked').value === 'static' ? 'Tx 静止' : 'Tx 运动';
-  const items = [
-    ['📦', 'Rx 数据状态', document.getElementById('rxPath').value || '未加载'],
-    ['🧰', '校准数据状态', document.getElementById('calPath').value || '未加载'],
-    ['📍', 'Tx GPS 数据状态', document.getElementById('txGpsPath').value || '未加载'],
-    ['🛣️', '场景', scene],
-    ['📡', 'Tx 模式', txMode],
-    ['⏱️', '当前时间', `${Number(s?.timeSec || 0).toFixed(3)} s`],
-    ['📏', 'Tx-Rx 距离', `${Number(s?.distanceM || 0).toFixed(2)} m`],
-    ['🧪', '校准开关', document.getElementById('applyCalibration').checked ? '启用' : '关闭'],
-  ];
-  overview.innerHTML = items.map(([icon, label, value]) => `<li><div>${icon}</div><div><strong>${label}</strong><span>${escapeHtml(String(value))}</span></div></li>`).join('');
-}
-
-function updateMapPanel() {
-  if (!AppState.dataset) return;
-  const svg = document.getElementById('mapSvg');
-  const panel = document.getElementById('mapPanel');
-  const rx = AppState.dataset.rxGps || [];
-  const tx = AppState.dataset.txGps;
-  if (!rx.length || !tx) return;
-  const cur = rx[Math.min(AppState.currentFrame, rx.length - 1)];
-  const showLine = document.getElementById('showTrackLines').checked;
-  if (AppState.leafletMap && window.L) {
-    panel.classList.add('leaflet-active');
-    Object.values(AppState.leafletLayers).forEach(layer => layer && AppState.leafletMap.removeLayer(layer));
-    const rxLatLng = rx.map(p => [Number(p.lat), Number(p.lon)]).filter(p => Number.isFinite(p[0]) && Number.isFinite(p[1]));
-    const txLatLng = [Number(tx.lat), Number(tx.lon)];
-    if (showLine && rxLatLng.length > 1) AppState.leafletLayers.rxLine = L.polyline(rxLatLng, { color: '#2474d2', weight: 4, opacity: 0.85 }).addTo(AppState.leafletMap);
-    AppState.leafletLayers.tx = L.circleMarker(txLatLng, { radius: 7, color: '#9d2a2a', fillColor: '#e55353', fillOpacity: 0.95 }).addTo(AppState.leafletMap).bindTooltip('Tx');
-    AppState.leafletLayers.rx = L.circleMarker([Number(cur.lat), Number(cur.lon)], { radius: 8, color: '#ffffff', weight: 3, fillColor: '#19a974', fillOpacity: 0.95 }).addTo(AppState.leafletMap).bindTooltip(`Rx F${AppState.currentFrame}`);
-    const bounds = L.latLngBounds([...rxLatLng, txLatLng]);
-    if (bounds.isValid()) AppState.leafletMap.fitBounds(bounds.pad(0.18), { animate: false, maxZoom: 18 });
-    setTimeout(() => AppState.leafletMap.invalidateSize(), 0);
-    return;
-  }
-  const points = rx.map(p => ({ lat: Number(p.lat), lon: Number(p.lon) })).concat([{ lat: Number(tx.lat), lon: Number(tx.lon) }]);
-  const lats = points.map(p => p.lat), lons = points.map(p => p.lon);
-  const minLat = Math.min(...lats), maxLat = Math.max(...lats), minLon = Math.min(...lons), maxLon = Math.max(...lons);
-  const project = p => {
-    const x = 60 + ((Number(p.lon) - minLon) / Math.max(maxLon - minLon, 1e-9)) * 880;
-    const y = 360 - ((Number(p.lat) - minLat) / Math.max(maxLat - minLat, 1e-9)) * 300;
-    return [x, y];
-  };
-  const path = rx.map(project).map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(' ');
-  const [txX, txY] = project(tx);
-  const [cx, cy] = project(cur);
-  svg.innerHTML = `
-    <text x="34" y="38" fill="#456" font-size="16">GPS Track</text>
-    ${showLine ? `<polyline points="${path}" fill="none" stroke="#2474d2" stroke-width="4" stroke-linejoin="round" opacity="0.88"/>` : ''}
-    <circle cx="${txX}" cy="${txY}" r="9" fill="#e55353"/><text x="${txX + 12}" y="${txY - 8}" fill="#9d2a2a" font-size="14">Tx</text>
-    <circle cx="${cx}" cy="${cy}" r="10" fill="#19a974" stroke="#fff" stroke-width="3"/><text x="${cx + 13}" y="${cy + 5}" fill="#116c4e" font-size="14">Rx F${AppState.currentFrame}</text>
-  `;
-}
-
-function updateCIRPlot() {
+function updatePdpWaterfall() {
   const wf = AppState.dataset?.cirWaterfall;
   if (!wf) return;
-  AppState.charts.cir.setOption({
-    tooltip: { position: 'top' },
-    grid: { left: 48, right: 18, top: 22, bottom: 40 },
-    xAxis: { type: 'category', name: 'Delay/ns', data: wf.delayNs, axisLabel: { interval: Math.ceil(wf.delayNs.length / 6) } },
-    yAxis: { type: 'category', name: 'Time/s', data: wf.timeSec.map(v => Number(v).toFixed(2)), axisLabel: { interval: Math.ceil(wf.timeSec.length / 6) } },
-    visualMap: { min: -100, max: 0, calculable: true, orient: 'horizontal', left: 'center', bottom: 0, inRange: { color: ['#12365d', '#2474d2', '#f1c75b', '#e55353'] } },
-    series: [{ type: 'heatmap', data: heatmapTriples(wf.powerDb), progressive: 8000 }]
-  });
-}
-
-async function updateDPSDPlot() {
-  let d = AppState.dataset?.dopplerDelay;
-  const frame = AppState.currentFrame || 0;
-  if (AppState.dataset?.meta?.dopplerDelaySidecar && AppState.datasetName) {
-    const cacheKey = String(frame);
-    if (AppState.dpsdCache.has(cacheKey)) {
-      d = AppState.dpsdCache.get(cacheKey);
-    } else {
-      const token = ++AppState.dpsdRequestToken;
-      try {
-        const response = await fetch(`/api/datasets/${encodeURIComponent(AppState.datasetName)}/dpsd/${frame}`);
-        if (response.ok) {
-          d = await response.json();
-          AppState.dpsdCache.set(cacheKey, d);
-          if (token !== AppState.dpsdRequestToken) return;
-        }
-      } catch (error) {
-        console.warn('DPSD sidecar fetch failed; using embedded fallback', error);
-      }
-    }
-  }
-  if (!d) return;
-  const isDopplerTime = d.method === 'delay_averaged_doppler_time_fft';
-  const xValues = isDopplerTime ? d.timeSec : (d.delayBins || d.delayNs || []);
-  AppState.charts.dpsd.setOption({
-    title: { text: '', left: 8, top: 0, textStyle: { fontSize: 12, color: '#456' } },
-    tooltip: { position: 'top' },
-    grid: { left: 54, right: 18, top: 28, bottom: 42 },
-    xAxis: { type: 'category', name: isDopplerTime ? 'Time/s' : 'Delay Index', data: xValues.map(v => Number(v).toFixed(isDopplerTime ? 0 : 0)), axisLabel: { interval: Math.ceil(xValues.length / 7) } },
-    yAxis: { type: 'category', name: 'Doppler/Hz', data: d.dopplerHz.map(v => Number(v).toFixed(1)), axisLabel: { interval: Math.ceil(d.dopplerHz.length / 6) } },
-    visualMap: { min: -60, max: 0, calculable: true, orient: 'horizontal', left: 'center', bottom: 0, inRange: { color: ['#00224e', '#004c99', '#00a6ca', '#f5d742', '#d7191c'] } },
-    series: [{ type: 'heatmap', data: heatmapTriples(d.powerDb), progressive: 12000 }]
+  const range = robustRange(wf.powerDb.flat());
+  const data = wf.powerDb.flatMap((row, y) => row.map((v, x) => [x, y, Number(v)]));
+  AppState.charts.pdpWaterfall.setOption({
+    tooltip: { position: 'top', formatter: p => `t=${wf.timeSec[p.data[1]]?.toFixed?.(1) ?? p.data[1]}s<br/>delay=${wf.delayNs[p.data[0]]}ns<br/>power=${p.data[2].toFixed(1)} dB` },
+    grid: { left: 56, right: 64, top: 16, bottom: 40 },
+    xAxis: { type: 'category', name: 'Delay (ns)', nameLocation: 'middle', nameGap: 28, data: wf.delayNs, axisLabel: { interval: Math.ceil(wf.delayNs.length / 8) } },
+    yAxis: { type: 'category', name: 'Time (s)', data: wf.timeSec.map(v => Number(v).toFixed(0)), axisLabel: { interval: Math.ceil(wf.timeSec.length / 8) } },
+    visualMap: visualMapContinuous(range, JET_STOPS),
+    series: [{ type: 'heatmap', data, progressive: 8000 }],
+    ...axisPointerOpt(),
   }, true);
 }
 
-function updateMusicPlot() {
-  const ds = AppState.dataset;
-  const img = document.getElementById('mpcPng');
-  if (!ds || !img) return;
-  const rawName = ds.meta?.name || '';
-  const stem = rawName.replace(/\.bin$/i, '');
-  if (stem) {
-    img.src = `/sage_outputs/figure4_style_0m_special_w20/${stem}/w20_separate_delay_time_power.png`;
-    img.style.display = '';
-  } else {
-    img.style.display = 'none';
-  }
+function scatterChart(chart, xKey, yKey, xName, yName) {
+  const mpc = AppState.dataset?.mpcScatter || [];
+  if (!mpc.length) return;
+  const range = robustRange(mpc.map(m => m.powerDb));
+  const data = mpc.map(m => [Number(m[xKey]), Number(m[yKey]), Number(m.powerDb)]);
+  chart.setOption({
+    tooltip: { trigger: 'item', formatter: p => `${xName}=${p.data[0].toFixed(1)}<br/>${yName}=${p.data[1].toFixed(1)}<br/>power=${p.data[2].toFixed(1)} dB` },
+    grid: { left: 60, right: 64, top: 16, bottom: 40 },
+    xAxis: { type: 'value', name: xName, nameLocation: 'middle', nameGap: 28, scale: true },
+    yAxis: { type: 'value', name: yName, scale: true },
+    visualMap: visualMapContinuous(range, HOT_STOPS),
+    dataZoom: dataZoomXY(),
+    series: [{ type: 'scatter', symbolSize: 6, data }],
+    ...axisPointerOpt(),
+  }, true);
+}
+function updateDelayTime() { scatterChart(AppState.charts.delayTime, 'timeSec', 'delayNs', 'Measurement time (s)', 'Delay (ns)'); }
+function updateDopplerTime() { scatterChart(AppState.charts.dopplerTime, 'timeSec', 'dopplerHz', 'Measurement time (s)', 'Doppler (Hz)'); }
+
+// ---------------- 逐帧交互 ----------------
+function currentEntry() {
+  const { orderedFrames, map } = AppState.frameIndex;
+  if (!orderedFrames.length) return null;
+  const idx = Math.min(orderedFrames.length - 1, AppState.sliderValue * AppState.decim);
+  return map.get(orderedFrames[idx]) || null;
 }
 
-function updateMusicTrackPlot() {
-  // Kept for compatibility; updateMusicPlot now handles the PNG display.
-  updateMusicPlot();
+function syncFrame(sliderValue) {
+  if (AppState.uiState !== 'READY' && AppState.uiState !== 'LOADING_DATA') return;
+  const maxV = Number(document.getElementById('frameSlider').max || 0);
+  AppState.sliderValue = Math.max(0, Math.min(maxV, sliderValue));
+  document.getElementById('frameSlider').value = String(AppState.sliderValue);
+  updatePdpCurve();
+  updateMapPanel();
+  updateStatusBar();
 }
 
-function updatePDPPlot() {
-  const payload = framePayload();
-  const curve = payload?.pdpCurve;
+function updatePdpCurve() {
+  const curve = currentEntry()?.payload?.pdpCurve;
   if (!curve) return;
   AppState.charts.pdp.setOption({
     tooltip: { trigger: 'axis' },
-    grid: { left: 48, right: 16, top: 20, bottom: 35 },
-    xAxis: { type: 'category', name: 'Delay/ns', data: curve.delayNs },
+    grid: { left: 52, right: 16, top: 18, bottom: 38 },
+    xAxis: { type: 'category', name: 'Delay (ns)', nameLocation: 'middle', nameGap: 26, data: curve.delayNs },
     yAxis: { type: 'value', name: curve.relative ? 'Rel dB' : 'dB' },
-    series: [{ type: 'line', showSymbol: false, smooth: true, data: curve.powerDb, lineStyle: { color: '#2474d2', width: 2 }, areaStyle: { color: 'rgba(36,116,210,0.12)' } }]
+    series: [{ type: 'line', showSymbol: false, smooth: false, data: curve.powerDb, lineStyle: { color: '#2474d2', width: 2 }, areaStyle: { color: 'rgba(36,116,210,0.12)' } }],
+    ...axisPointerOpt(),
+  }, true);
+}
+
+function updateMapPanel() {
+  const ds = AppState.dataset;
+  if (!ds || !AppState.leafletMap || !window.L) return;
+  const rx = ds.rxGps || [];
+  const tx = ds.txGps;
+  const cur = currentEntry()?.gps;
+  if (!rx.length || !tx || !cur) return;
+  Object.values(AppState.leafletLayers).forEach(l => l && AppState.leafletMap.removeLayer(l));
+  const rxLatLng = rx.map(p => [Number(p.lat), Number(p.lon)]).filter(p => Number.isFinite(p[0]) && Number.isFinite(p[1]));
+  const txLatLng = [Number(tx.lat), Number(tx.lon)];
+  AppState.leafletLayers.rxLine = L.polyline(rxLatLng, { color: '#2474d2', weight: 3, opacity: 0.85 }).addTo(AppState.leafletMap);
+  AppState.leafletLayers.tx = L.circleMarker(txLatLng, { radius: 7, color: '#9d2a2a', fillColor: '#e55353', fillOpacity: 0.95 }).addTo(AppState.leafletMap).bindTooltip('Tx');
+  AppState.leafletLayers.rx = L.circleMarker([Number(cur.lat), Number(cur.lon)], { radius: 8, color: '#fff', weight: 3, fillColor: '#19a974', fillOpacity: 0.95 }).addTo(AppState.leafletMap).bindTooltip('当前 Rx');
+  const bounds = L.latLngBounds([...rxLatLng, txLatLng]);
+  if (bounds.isValid()) AppState.leafletMap.fitBounds(bounds.pad(0.18), { animate: false, maxZoom: 18 });
+  setTimeout(() => AppState.leafletMap.invalidateSize(), 0);
+}
+
+function updateStatusBar() {
+  const ds = AppState.dataset; if (!ds) return;
+  const entry = currentEntry();
+  const stats = entry?.payload?.stats || {};
+  const summary = ds.meta?.summary || {};
+  const set = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
+  set('sbScene', (ds.meta?.name || AppState.datasetName || '--').replace(/\.bin$/i, ''));
+  set('sbTxMode', ds.meta?.txMode === 'moving' ? 'Tx 运动' : 'Tx 静止');
+  set('sbCarrier', document.getElementById('carrierHzInput').value ? `${document.getElementById('carrierHzInput').value} ${document.getElementById('carrierUnitSelect').value}` : '--');
+  set('sbTime', `${Number(entry?.payload?.timeSec ?? 0).toFixed(2)} s`);
+  set('sbDist', Number.isFinite(stats.distanceM) ? `${stats.distanceM.toFixed(2)} m` : '--');
+  set('sbNmpc', summary.mpcCandidates ?? (ds.mpcScatter?.length ?? '--'));
+  set('sbWindows', summary.nWindows ?? (ds.framePayloads?.length ?? '--'));
+  set('sbDt', `${AppState.dtSec.toFixed(3)} s`);
+}
+
+// ---------------- 回放 ----------------
+function togglePlayback() { AppState.playing ? stopPlayback() : startPlayback(); }
+function startPlayback() {
+  AppState.playing = true;
+  document.getElementById('playPauseBtn').textContent = '暂停';
+  AppState.timer = setInterval(() => {
+    const maxV = Number(document.getElementById('frameSlider').max || 0);
+    syncFrame(AppState.sliderValue >= maxV ? 0 : AppState.sliderValue + 1);
+  }, 300);
+}
+function stopPlayback() {
+  AppState.playing = false;
+  const btn = document.getElementById('playPauseBtn'); if (btn) btn.textContent = '播放';
+  clearInterval(AppState.timer);
+}
+
+function jumpToSeconds() {
+  const sec = parseFloat(document.getElementById('jumpInput').value);
+  if (!Number.isFinite(sec)) return;
+  const { orderedFrames, map } = AppState.frameIndex;
+  let best = 0, bestDiff = Infinity;
+  orderedFrames.forEach((fid, i) => {
+    const t = Number(map.get(fid)?.payload?.timeSec ?? 0);
+    const d = Math.abs(t - sec);
+    if (d < bestDiff) { bestDiff = d; best = i; }
   });
+  syncFrame(Math.floor(best / AppState.decim));
 }
 
-function updateStatsPanel() {
-  const s = frameStat() || {};
-  const rows = [
-    ['路径数', s.pathCount], ['最大功率', fmt(s.peakPowerDb, ' dB')], ['平均功率', fmt(s.meanPowerDb, ' dB')],
-    ['峰值时延', fmt(s.peakDelayNs, ' ns')], ['均方根时延', fmt(s.rmsDelayNs, ' ns')], ['Tx-Rx 距离', fmt(s.distanceM, ' m')]
-  ];
-  document.querySelector('#statsTable tbody').innerHTML = rows.map(([k, v]) => `<tr><td>${k}</td><td>${v ?? '--'}</td></tr>`).join('');
+// ---------------- 导出 ----------------
+function exportChartPng(key) {
+  const chart = AppState.charts[key];
+  if (!chart) return;
+  const url = chart.getDataURL({ pixelRatio: 2, backgroundColor: '#fff' });
+  const a = document.createElement('a');
+  a.href = url; a.download = `${(AppState.datasetName || 'chart').replace(/\.json$/, '')}_${key}.png`; a.click();
 }
 
-function updatePowerDistribution() {
-  const payload = framePayload();
-  const dist = payload?.powerDistribution?.length ? payload.powerDistribution : buildDistribution(payload?.pdpCurve?.powerDb || []);
-  AppState.charts.power.setOption({
-    tooltip: { trigger: 'axis' },
-    grid: { left: 45, right: 14, top: 18, bottom: 35 },
-    xAxis: { type: 'category', data: dist.map(d => d.label) },
-    yAxis: { type: 'value', name: 'count' },
-    series: [{ type: 'bar', data: dist.map(d => d.count), itemStyle: { color: '#2474d2' } }]
-  });
+function exportPdpCsv() {
+  const curve = currentEntry()?.payload?.pdpCurve;
+  if (!curve) return;
+  const rows = ['delayNs,powerDb', ...curve.delayNs.map((d, i) => `${d},${curve.powerDb[i]}`)];
+  const blob = new Blob([rows.join('\n')], { type: 'text/csv' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `${(AppState.datasetName || 'pdp').replace(/\.json$/, '')}_frame${AppState.sliderValue}.csv`; a.click();
+  URL.revokeObjectURL(a.href);
 }
 
-function frameStat() { return AppState.dataset?.frameStats?.[Math.min(AppState.currentFrame, (AppState.dataset.frameStats?.length || 1) - 1)]; }
-function framePayload() { return AppState.dataset?.framePayloads?.[Math.min(AppState.currentFrame, (AppState.dataset.framePayloads?.length || 1) - 1)]; }
-function heatmapTriples(matrix) { return matrix.flatMap((row, y) => row.map((value, x) => [x, y, Number(value)])); }
-function fmt(value, suffix) { return Number.isFinite(Number(value)) ? `${Number(value).toFixed(3)}${suffix}` : '--'; }
-function escapeHtml(text) { return text.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
-function buildDistribution(values) {
-  const bins = [['>-20', -20, Infinity], ['-20~-40', -40, -20], ['-40~-60', -60, -40], ['-60~-80', -80, -60], ['<-80', -Infinity, -80]];
-  return bins.map(([label, lo, hi]) => ({ label, count: values.filter(v => Number(v) >= lo && Number(v) < hi).length }));
+function rerenderAll() {
+  if (AppState.uiState !== 'READY') return;
+  updatePdpWaterfall(); updateDelayTime(); updateDopplerTime(); updatePdpCurve();
 }
 
-// 预留真实业务接口名，后续可被后端/WebSocket/pywebview 直接调用。
-function renderMap(gpsData) { updateMapPanel(gpsData); }
-function renderCIR(data, frame) { updateCIRPlot(data, frame); }
-function renderDoppler(data, frame) { updateDPSDPlot(data, frame); }
-function renderMPCScatter(data, frame) { updateMusicPlot(data, frame); }
-function computeStatistics(frame) { return AppState.dataset?.frameStats?.[frame]; }
+// ---------------- 工具 ----------------
+function markLoaded(id, loaded) { const el = document.getElementById(id); if (el) el.className = `load-dot ${loaded ? 'ok' : 'pending'}`; }
+function numOrNull(id) { const v = parseFloat(document.getElementById(id)?.value); return Number.isFinite(v) ? v : null; }
 
 window.addEventListener('DOMContentLoaded', async () => {
   initLayout();
   bindControls();
+  updateTxModeUI();
+  setUiState('IDLE');
   await checkBackend();
   await loadDatasetList();
-  if (!AppState.dataset) await loadDatasetFromApi('default');
+  await loadDatasetFromApi('default');
 });

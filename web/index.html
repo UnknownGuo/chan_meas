@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>V2V信道测量数据离线分析平台</title>
-  <link rel="stylesheet" href="/static/styles.css?v=20260614-compact-map" />
+  <title>信道测量分析软件</title>
+  <link rel="stylesheet" href="/static/styles.css?v=20260616-redesign" />
   <link rel="stylesheet" href="/static/leaflet.css" />
   <script src="/static/echarts.min.js"></script>
   <script src="/static/leaflet.js"></script>
@@ -13,13 +13,13 @@
   <div class="app-shell">
     <header class="topbar">
       <div>
-        <div class="eyebrow">Channel Measurement Offline Workbench</div>
-        <h1>V2V信道测量数据离线分析平台</h1>
+        <div class="eyebrow">Channel Measurement Analysis Workbench</div>
+        <h1>信道测量分析软件</h1>
       </div>
       <div class="status-strip">
         <span id="backendStatus" class="status-pill warning">后端检查中</span>
         <span id="datasetStatus" class="status-pill muted">数据未加载</span>
-        <select id="datasetSelect" class="dataset-select" aria-label="选择示例数据集"></select>
+        <select id="datasetSelect" class="dataset-select" aria-label="选择已分析数据集"></select>
       </div>
     </header>
 
@@ -27,86 +27,111 @@
       <section class="control-card">
         <h2>数据导入</h2>
         <div class="file-row" data-kind="rx">
-          <label>Rx 数据</label>
-          <input id="rxPath" readonly value="等待选择或加载示例" />
-          <button id="rxChooseBtn" class="secondary-btn">选择文件</button>
+          <label>Rx 数据（.bin，必填）</label>
+          <input id="rxPath" readonly value="等待选择" />
+          <button id="rxChooseBtn" class="secondary-btn">选择</button>
           <span id="rxLoadState" class="load-dot pending"></span>
         </div>
         <div class="file-row" data-kind="calibration">
-          <label>校准数据</label>
+          <label>校准数据（.bin，可选）</label>
           <input id="calPath" readonly value="可选" />
-          <button id="calChooseBtn" class="secondary-btn">选择文件</button>
+          <button id="calChooseBtn" class="secondary-btn">选择</button>
           <span id="calLoadState" class="load-dot pending"></span>
         </div>
-        <div class="file-row" data-kind="txgps">
-          <label>Tx GPS</label>
-          <input id="txGpsPath" readonly value="等待加载" />
-          <button id="txGpsChooseBtn" class="secondary-btn">选择文件</button>
-          <span id="txGpsLoadState" class="load-dot pending"></span>
-        </div>
-        <input id="hiddenFileInput" type="file" accept=".json,.bin,.txt" hidden />
-        <button id="loadDefaultBtn" class="primary-btn full-width">加载默认样例数据</button>
-      </section>
 
-      <section class="control-card">
-        <h2>分析选项</h2>
-        <label class="check-row"><input id="applyCalibration" type="checkbox" /> 做校准</label>
-        <label class="check-row"><input id="showTrackLines" type="checkbox" checked /> 显示轨迹线</label>
-        <div class="radio-group">
+        <label class="field-label" for="carrierHzInput">载波频率（算 Doppler 用）</label>
+        <div class="carrier-row">
+          <input id="carrierHzInput" type="number" min="0" step="0.1" placeholder="如 28" />
+          <select id="carrierUnitSelect" aria-label="载波频率单位">
+            <option value="GHz" selected>GHz</option>
+            <option value="MHz">MHz</option>
+          </select>
+        </div>
+
+        <div class="radio-group" role="radiogroup" aria-label="Tx 模式">
           <label><input type="radio" name="txMode" value="static" checked /> Tx 静止</label>
           <label><input type="radio" name="txMode" value="moving" /> Tx 运动</label>
         </div>
-        <label class="field-label" for="sceneSelect">场景类型</label>
-        <select id="sceneSelect">
-          <option value="v2v">V2V 动态</option>
-          <option value="static-ota">静态 OTA</option>
-          <option value="b2b">B2B 校准</option>
-          <option value="campus">校园道路</option>
-        </select>
+        <div id="txStaticInputs" class="tx-coords">
+          <input id="txLat" type="number" step="0.000001" placeholder="纬度 lat" />
+          <input id="txLon" type="number" step="0.000001" placeholder="经度 lon" />
+          <input id="txAlt" type="number" step="0.1" placeholder="高程 alt(m)" />
+        </div>
+        <button id="txBinBtn" class="secondary-btn full-width" disabled hidden>加载 Tx bin（待开发）</button>
+
+        <button id="importBtn" class="secondary-btn full-width">导入</button>
+        <input id="hiddenFileInput" type="file" accept=".bin" hidden />
+      </section>
+
+      <section class="control-card">
+        <h2>分析</h2>
+        <button id="analyzeBtn" class="primary-btn full-width">分析</button>
+        <button id="reanalyzeBtn" class="secondary-btn full-width">重新分析（强制重算）</button>
+        <div id="analyzeProgress" class="analyze-progress" hidden>
+          <div class="bar"><div id="analyzeProgressFill"></div></div>
+          <span id="analyzeProgressLabel">分析中…</span>
+        </div>
       </section>
 
       <section class="control-card playback-card">
         <h2>回放控制</h2>
-        <input id="frameSlider" type="range" min="0" max="0" value="0" />
+        <input id="frameSlider" type="range" min="0" max="0" value="0" disabled />
         <div class="transport">
-          <button id="prevFrameBtn">上一帧</button>
-          <button id="playPauseBtn" class="primary-btn">播放</button>
-          <button id="nextFrameBtn">下一帧</button>
+          <button id="playPauseBtn" class="primary-btn" disabled>播放</button>
+          <div class="jump-row">
+            <input id="jumpInput" type="number" min="0" step="1" placeholder="跳转秒" disabled />
+            <button id="jumpBtn" disabled>跳转</button>
+          </div>
         </div>
-        <dl class="compact-kv">
-          <div><dt>当前帧</dt><dd id="currentFrameLabel">0 / 0</dd></div>
-          <div><dt>当前时间</dt><dd id="currentTimeLabel">0.000 s</dd></div>
-          <div><dt>总时长</dt><dd id="durationLabel">0.000 s</dd></div>
-          <div><dt>帧率</dt><dd id="frameRateLabel">-- Hz</dd></div>
-        </dl>
+        <label class="check-row"><input id="cursorToggle" type="checkbox" /> 读数游标</label>
       </section>
     </aside>
 
     <main class="main-content panel-scroll">
-      <section class="analysis-grid">
-        <article class="chart-card"><h3>CIR 瀑布图 / 时延-功率</h3><div id="cirWaterfallChart" class="chart"></div></article>
-        <article class="chart-card"><h3>Doppler 谱瀑布图 / Delay 平均</h3><div id="dpsdChart" class="chart"></div></article>
-        <article class="chart-card music-track-card"><h3>MPC Delay-Time (SAGE B2B calibrated)</h3><img id="mpcPng" class="chart music-track-chart" style="object-fit:contain; background:#f8fbff; width:100%; height:100%;" alt="MPC Delay-Time" /></article>
+      <section id="statusBar" class="status-bar">
+        <span class="status-item"><b>场景</b><i id="sbScene">--</i></span>
+        <span class="status-item"><b>Tx 模式</b><i id="sbTxMode">--</i></span>
+        <span class="status-item"><b>载波频率</b><i id="sbCarrier">--</i></span>
+        <span class="status-item"><b>当前时间</b><i id="sbTime">--</i></span>
+        <span class="status-item"><b>Tx-Rx 距离</b><i id="sbDist">--</i></span>
+        <span class="status-item"><b>N_MPC</b><i id="sbNmpc">--</i></span>
+        <span class="status-item"><b>窗口数</b><i id="sbWindows">--</i></span>
+        <span class="status-item"><b>帧间隔</b><i id="sbDt">--</i></span>
       </section>
 
-      <section class="bottom-grid">
-        <section class="map-card chart-card compact-map-card">
+      <section class="summary-grid">
+        <article class="chart-card wide-chart">
+          <div class="card-title-row"><h3>PDP 原始瀑布（时延-时间-功率）</h3><button class="export-fig-btn" data-chart="pdpWaterfall">导出图</button></div>
+          <div id="pdpWaterfallChart" class="chart"></div>
+        </article>
+        <article class="chart-card wide-chart">
+          <div class="card-title-row"><h3>SAGE 多径 时延-时间-功率</h3><button class="export-fig-btn" data-chart="delayTime">导出图</button></div>
+          <div id="delayTimeChart" class="chart"></div>
+        </article>
+        <article class="chart-card wide-chart">
+          <div class="card-title-row"><h3>SAGE 多径 多普勒-时间-功率</h3><button class="export-fig-btn" data-chart="dopplerTime">导出图</button></div>
+          <div id="dopplerTimeChart" class="chart"></div>
+        </article>
+      </section>
+
+      <section class="interactive-grid">
+        <article class="chart-card">
+          <div class="card-title-row"><h3>当前帧 PDP 曲线</h3><button id="exportCsvBtn" class="export-fig-btn" disabled>导出数据</button></div>
+          <div id="pdpChart" class="chart"></div>
+        </article>
+        <article class="chart-card map-card">
           <div class="card-title-row">
-            <h2>GPS 轨迹与 Tx/Rx 位置</h2>
-            <span id="mapLegend" class="legend">蓝线=Rx轨迹，红点=Tx，绿点=当前Rx</span>
+            <h3>GPS 轨迹与当前 Rx 位置</h3>
+            <span id="mapLegend" class="legend">蓝线=Rx轨迹，红=Tx，绿=当前Rx</span>
           </div>
-          <div id="mapPanel" class="map-panel compact-map-panel">
+          <div id="mapPanel" class="map-panel">
             <div id="mapLeaflet" class="leaflet-map"></div>
-            <svg id="mapSvg" viewBox="0 0 1000 420" preserveAspectRatio="none"></svg>
           </div>
-        </section>
-        <article class="chart-card"><h3>当前帧 CIR/PDP 曲线</h3><div id="pdpChart" class="chart small-chart"></div></article>
-        <article class="chart-card stats-card"><h3>统计参数</h3><table id="statsTable"><tbody></tbody></table></article>
+        </article>
       </section>
     </main>
-
   </div>
 
-  <script src="/static/app.js?v=20260614-compact-map"></script>
+  <script src="/static/app.js?v=20260616-redesign"></script>
 </body>
 </html>

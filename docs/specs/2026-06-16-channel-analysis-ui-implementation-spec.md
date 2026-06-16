@@ -192,6 +192,8 @@ return {"status":"running", "jobId": jobId}
 ### 4.3 生成脚本改造
 `scripts/run_adaptive_sage_w20_step100_remaining.py` 抽出单 bin 函数 `analyze_one(bin_path, carrier_hz, out_dir) -> json_path`，供后端 import 调用；保留原 `__main__` 批处理入口不变（向后兼容）。
 
+> **载波频率的作用范围（执行阶段澄清，2026-06-16）**：核实 `src/signal/sage_adaptive.py::estimate_window_paths_adaptive` 的多普勒估计只用 `frame_rate_hz` 做慢时间 FFT（采样定理决定频率轴），**不依赖载波频率**——这是物理上正确的：多普勒频移 $f_d$（Hz）由帧率直接解调得到；载波频率只用于把 $f_d$ 换算成速度 $v=f_d\cdot c/f_c$，而当前管线不产出速度字段。因此 `analyze_one(carrier_hz=...)` **不把 carrier_hz 传入 SAGE 计算**，只写入产出 JSON 的 `meta.carrierHz`（Hz）供前端状态栏显示。若未来需要速度换算，再扩展。
+
 ## 5. P5 — 新增按钮
 
 | 按钮 id | 行为 |
