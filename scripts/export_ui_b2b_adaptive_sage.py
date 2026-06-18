@@ -20,6 +20,7 @@ FILES = [
 ]
 
 B2B_PATH = Path("/mnt/win_data/data_mea/zjk_mea/calibration/b2b_cir.npy")
+B2B_ATTENUATION_DB = 60.0  # fixed attenuator inserted only for the B2B loopback recording
 OUT_DIR = ROOT / "data" / "ui_samples"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -39,6 +40,7 @@ def main() -> None:
             include_joint=False,
             include_music=False,
             b2b_cir=b2b_cir,
+            b2b_attenuation_db=B2B_ATTENUATION_DB,
         )
         out_name = f"{path.stem}_b2b_adaptive_sage.json"
         out_path = OUT_DIR / out_name

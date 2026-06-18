@@ -15,7 +15,7 @@ if (!window.echarts) {
 const JET_STOPS = ['#00008f', '#0000ff', '#0080ff', '#00ffff', '#80ff80', '#ffff00', '#ff8000', '#ff0000', '#800000'];
 const HOT_STOPS = ['#000000', '#3b0000', '#8f0000', '#ff3000', '#ff8000', '#ffd000', '#ffff60', '#ffffff'];
 
-function robustRange(values, loPct = 1, hiPct = 99) {
+function robustRange(values, loPct = 0, hiPct = 100) {
   const sorted = values.filter(Number.isFinite).slice().sort((a, b) => a - b);
   if (!sorted.length) return [0, 1];
   const q = p => sorted[Math.min(sorted.length - 1, Math.max(0, Math.round(p / 100 * (sorted.length - 1))))];

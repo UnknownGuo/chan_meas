@@ -21,6 +21,7 @@ from src.signal.sage_validation import SageCandidate, classify_candidates_by_tra
 
 DATA_PATH = Path('/mnt/win_data/data_mea/zjk_mea/196m_smwhere_data.bin')
 B2B_PATH = Path('/mnt/win_data/data_mea/zjk_mea/calibration/b2b_cir.npy')
+B2B_ATTENUATION_DB = 60.0  # fixed attenuator inserted only for the B2B loopback recording
 OUT_ROOT = Path('/home/guo/桌面/win_data/data_mea/zjk_mea/sage_outputs/param_grid_196m_smwhere')
 WINDOW = 20
 STEP = 100
@@ -98,7 +99,13 @@ def run_combo(cov: float, gain: float) -> dict:
     b2b = np.load(B2B_PATH, mmap_mode='r')
     b2b_ref = np.array(b2b[0], dtype=np.complex128)
     frames = read_indexed_frames(DATA_PATH, needed)
-    cir = regularized_frequency_calibrate(_sliding_correlate(_parse_iq(frames)), b2b_ref, regularization=1e-3, axis=1)
+    cir = regularized_frequency_calibrate(
+        _sliding_correlate(_parse_iq(frames)),
+        b2b_ref,
+        regularization=1e-3,
+        axis=1,
+        attenuation_db=B2B_ATTENUATION_DB,
+    )
     pos = {int(idx): i for i, idx in enumerate(needed)}
     delay_bins = np.arange(MAX_DELAY_BINS, dtype=np.int64)
     delay_ns = delay_bins.astype(np.float64) / float(BW_HZ) * 1e9

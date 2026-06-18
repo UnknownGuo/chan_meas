@@ -145,7 +145,7 @@ def build_full_window_dataset(
         step_frames=step,
         max_delay_bins=300,
         n_doppler_bins=64,
-        relative_to_peak=True,
+        relative_to_peak=False,
     )
 
     doppler_time_waterfall["timeSec"] = time_sec

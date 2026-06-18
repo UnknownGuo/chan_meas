@@ -9,6 +9,7 @@ def regularized_frequency_calibrate(
     *,
     regularization: float = 1e-3,
     axis: int = -1,
+    attenuation_db: float = 0.0,
 ) -> np.ndarray:
     """Remove B2B system response with regularized frequency-domain division.
 
@@ -19,9 +20,19 @@ def regularized_frequency_calibrate(
     where lambda is interpreted relative to max(|H_b2b|^2) when
     ``regularization < 1``.  The function works for a single CIR vector or a
     stack of CIRs; B2B response is broadcast along non-delay dimensions.
+
+    ``attenuation_db`` compensates for a fixed attenuator that was inserted
+    only while recording the B2B reference (e.g. to avoid receiver
+    saturation on a direct cable connection) and is absent from the real
+    measurement chain. The B2B reference amplitude is scaled up by this
+    amount before the division, so the result reflects the true
+    (un-attenuated) system gain instead of inheriting the attenuator's loss
+    as spurious output gain.
     """
     measured = np.asarray(measured_cir, dtype=np.complex128)
     b2b = np.asarray(b2b_cir, dtype=np.complex128)
+    if attenuation_db:
+        b2b = b2b * (10.0 ** (float(attenuation_db) / 20.0))
     if measured.shape[axis] != b2b.shape[-1]:
         raise ValueError(
             f"delay dimension mismatch: measured axis {axis} has {measured.shape[axis]} bins, "

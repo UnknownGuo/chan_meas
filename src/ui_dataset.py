@@ -228,7 +228,7 @@ def compute_pdp_curve(
     frame_index: int,
     bandwidth_hz: float = BW_HZ,
     max_delay_bins: int = 512,
-    relative: bool = True,
+    relative: bool = False,
 ) -> dict[str, Any]:
     """Build the current-frame PDP curve payload for a line chart."""
     if cir.ndim != 2:
@@ -288,7 +288,7 @@ def compute_doppler_delay(
     frame_rate_hz: float = FRAME_RATE_HZ,
     max_delay_bins: int = 128,
     n_doppler_bins: int = 128,
-    relative_to_peak: bool = True,
+    relative_to_peak: bool = False,
 ) -> dict[str, Any]:
     """Compute a compact Doppler-Delay power map using slow-time FFT.
 
@@ -332,7 +332,7 @@ def compute_doppler_time_waterfall(
     step_frames: int | None = None,
     max_delay_bins: int = 300,
     n_doppler_bins: int = 64,
-    relative_to_peak: bool = True,
+    relative_to_peak: bool = False,
     use_hann_window: bool = False,
 ) -> dict[str, Any]:
     """Build a Doppler-Time waterfall by delay-averaging each DPSD window.
@@ -394,7 +394,7 @@ def compute_doppler_delay_frame(
     window_size_frames: int = 64,
     max_delay_bins: int = 300,
     n_doppler_bins: int = 64,
-    relative_to_peak: bool = True,
+    relative_to_peak: bool = False,
     use_hann_window: bool = False,
 ) -> dict[str, Any]:
     """MATLAB-reference Doppler-Delay FFT map for one slow-time window.
@@ -489,6 +489,7 @@ def compute_music_mpc(
     min_separation_delay_bins: int = 1,
     min_separation_doppler_bins: int = 2,
     min_peak_relative_db: float = 20.0,
+    relative_to_peak: bool = False,
 ) -> dict[str, Any]:
     """Lightweight MUSIC MPC estimator.
 
@@ -541,7 +542,8 @@ def compute_music_mpc(
     # MUSIC score and actual delay-bin power so weak pure tones do not outrank
     # physically stronger paths just because their grid frequency lands exactly.
     spectrum_db = (raw_db - col_max) + mean_power_db[None, :]
-    spectrum_db -= float(np.max(spectrum_db))
+    if relative_to_peak:
+        spectrum_db -= float(np.max(spectrum_db))
 
     candidates: list[tuple[float, int, int]] = []
     for dop_idx in range(spectrum_db.shape[0]):
@@ -643,7 +645,7 @@ def compute_joint_delay_doppler_tracks(
     max_delay_bins: int = 256,
     n_doppler_bins: int | None = None,
     max_paths: int = 15,
-    relative_to_peak: bool = True,
+    relative_to_peak: bool = False,
     use_hann_window: bool = True,
     min_separation_delay_bins: int = 1,
     min_separation_doppler_bins: int = 2,
@@ -1042,6 +1044,7 @@ def compute_frame_payload(
     bandwidth_hz: float = BW_HZ,
     frame_rate_hz: float = FRAME_RATE_HZ,
     max_delay_bins: int = 512,
+    relative_power: bool = False,
 ) -> dict[str, Any]:
     """Package all single-frame data needed when the UI slider selects a frame."""
     if not 0 <= frame_index < cir.shape[0]:
@@ -1059,7 +1062,7 @@ def compute_frame_payload(
             frame_index=frame_index,
             bandwidth_hz=bandwidth_hz,
             max_delay_bins=max_delay_bins,
-            relative=True,
+            relative=relative_power,
         ),
         "powerDistribution": compute_power_distribution(frame_power_db, relative_to_peak=False),
         "mpcScatter": [
@@ -1091,12 +1094,15 @@ def build_dataset_from_arrays(
     include_sage: bool = False,
     delay_gate_distance_m: float = 2000.0,
     b2b_cir: np.ndarray | None = None,
+    b2b_attenuation_db: float = 0.0,
 ) -> dict[str, Any]:
     """Build the JSON-serializable frontend dataset from processed arrays."""
     # B2B frequency-domain calibration if a reference pulse is provided.
     if b2b_cir is not None and b2b_cir.size > 0:
         ref = np.asarray(b2b_cir[0], dtype=np.complex128)
-        cir = regularized_frequency_calibrate(cir, ref, regularization=1e-3, axis=1)
+        cir = regularized_frequency_calibrate(
+            cir, ref, regularization=1e-3, axis=1, attenuation_db=b2b_attenuation_db
+        )
     n_frames = int(cir.shape[0])
     time_step = max(1, int(round(frame_rate_hz)))  # 1 frame per second
     delay_ns, power_db = downsample_cir_power_db(
@@ -1123,6 +1129,7 @@ def build_dataset_from_arrays(
             bandwidth_hz=bandwidth_hz,
             frame_rate_hz=frame_rate_hz,
             max_delay_bins=max_delay_bins,
+            relative_power=relative_power,
         )
         for i in decimated_indices
     ]
@@ -1216,6 +1223,7 @@ def build_measurement_dataset(
     include_sage: bool = False,
     delay_gate_distance_m: float = 2000.0,
     b2b_cir: np.ndarray | None = None,
+    b2b_attenuation_db: float = 0.0,
 ) -> dict[str, Any]:
     """Read Rx .bin data and build a compact frontend dataset."""
     rx = Path(rx_path)
@@ -1240,6 +1248,7 @@ def build_measurement_dataset(
         include_sage=include_sage,
         delay_gate_distance_m=delay_gate_distance_m,
         b2b_cir=b2b_cir,
+        b2b_attenuation_db=b2b_attenuation_db,
     )
 
 

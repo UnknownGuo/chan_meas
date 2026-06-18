@@ -39,6 +39,7 @@ from src.signal.sage_validation import SageCandidate, classify_candidates_by_tra
 DATA_DIR = Path("/mnt/win_data/data_mea/zjk_mea")
 OUT_ROOT = Path("/home/guo/桌面/win_data/data_mea/zjk_mea/sage_outputs/adaptive_w20_step100")
 B2B_PATH = Path("/mnt/win_data/data_mea/zjk_mea/calibration/b2b_cir.npy")
+B2B_ATTENUATION_DB = 60.0  # fixed attenuator inserted only for the B2B loopback recording
 
 # Files that already have the three required figures and full pipeline output.
 # (Empty here so that running this script reprocesses every bin file in DATA_DIR.)
@@ -213,6 +214,7 @@ def process_one_file(path: Path, b2b_ref: np.ndarray) -> dict:
         b2b_ref,
         regularization=1e-3,
         axis=1,
+        attenuation_db=B2B_ATTENUATION_DB,
     )
     pos = {int(idx): i for i, idx in enumerate(needed)}
 
