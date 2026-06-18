@@ -21,6 +21,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from src.paths import ZJK_RAW_DIR, ZJK_SAGE_OUTPUTS_DIR
 from src.pipeline.analyze import analyze_one
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -31,10 +32,12 @@ TILE_CACHE_DIR = PROJECT_ROOT / "data" / "tile_cache" / "esri_imagery"
 PREFERRED_DATASET_NAME = "0m-0m-all-firstantenna-xiaoquan_b2b_adaptive_sage.json"
 LEGACY_DEFAULT_DATASET_NAME = "zjk_last_measurement_max15_full.json"
 
-# 原始测量 .bin 所在目录；与 src/ui_dataset.py 默认 Tx GPS 路径同源（既有约定，未改架构）。
-RAW_BIN_DIRS = [Path("/mnt/win_data/data_mea/zjk_mea")]
-SAGE_OUTPUTS_DIR = Path("/mnt/win_data/data_mea/zjk_mea/sage_outputs")
-ADAPTIVE_SUMMARY_PATH = SAGE_OUTPUTS_DIR / "adaptive_w20_step100" / "adaptive_summary.json"
+# 原始测量 .bin 所在目录 + SAGE 离线处理输出目录；都从 config/local.py 取，换机器不用改代码。
+RAW_BIN_DIRS = [ZJK_RAW_DIR] if ZJK_RAW_DIR else []
+SAGE_OUTPUTS_DIR = ZJK_SAGE_OUTPUTS_DIR
+ADAPTIVE_SUMMARY_PATH = (
+    SAGE_OUTPUTS_DIR / "adaptive_w20_step100" / "adaptive_summary.json" if SAGE_OUTPUTS_DIR else None
+)
 
 # ---- compute-or-cache job state（单 worker 假设，见实现规格 §4.1）----
 JOB_LOCK = threading.Lock()
@@ -139,7 +142,7 @@ def load_dataset_file(name: str, dataset_dir: Path = DATASET_DIR) -> dict[str, A
 def _merge_adaptive_summary(payload: dict[str, Any]) -> None:
     """Merge adaptive_summary.json entry (by bin name) into meta.summary (HIGH-3)."""
     bin_name = payload.get("meta", {}).get("name")
-    if not bin_name or not ADAPTIVE_SUMMARY_PATH.exists():
+    if not bin_name or ADAPTIVE_SUMMARY_PATH is None or not ADAPTIVE_SUMMARY_PATH.exists():
         return
     try:
         summary = json.loads(ADAPTIVE_SUMMARY_PATH.read_text(encoding="utf-8"))
@@ -208,7 +211,8 @@ def create_app(dataset_dir: Path = DATASET_DIR) -> FastAPI:
     """Create the dashboard FastAPI app."""
     app = FastAPI(title="chan_meas offline analysis dashboard", version="0.1.0")
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
-    app.mount("/sage_outputs", StaticFiles(directory="/mnt/win_data/data_mea/zjk_mea/sage_outputs"), name="sage_outputs")
+    if SAGE_OUTPUTS_DIR is not None and SAGE_OUTPUTS_DIR.exists():
+        app.mount("/sage_outputs", StaticFiles(directory=SAGE_OUTPUTS_DIR), name="sage_outputs")
 
     @app.get("/", include_in_schema=False)
     def index() -> FileResponse:

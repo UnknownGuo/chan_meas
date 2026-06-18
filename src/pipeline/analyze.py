@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from src.calibration.constants import ZJK_B2B_ATTENUATION_DB, ZJK_B2B_REGULARIZATION
 from src.io.bin_read import _load_frames, _parse_iq, _sliding_correlate
 from src.ui_dataset import build_measurement_dataset
 
@@ -43,6 +44,8 @@ def analyze_one(
         relative_power=False,
         include_sage=True,
         b2b_cir=b2b_cir,
+        b2b_attenuation_db=ZJK_B2B_ATTENUATION_DB,
+        b2b_regularization=ZJK_B2B_REGULARIZATION,
     )
     dataset.setdefault("meta", {})["carrierHz"] = carrier_hz
     dataset["meta"]["txMode"] = tx_mode

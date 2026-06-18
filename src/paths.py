@@ -5,6 +5,12 @@ try:
 except ImportError:
     raise ImportError("找不到 config/local.py，请复制 config/local.example.py 并填入本机路径")
 
+try:
+    from config.local import ZJK_RAW_ROOT, ZJK_SAGE_OUTPUTS_ROOT
+except ImportError:
+    ZJK_RAW_ROOT = None
+    ZJK_SAGE_OUTPUTS_ROOT = None
+
 # 项目根目录（自动推断，换机器不用改）
 PROJECT_ROOT = Path(__file__).parent.parent
 
@@ -18,3 +24,7 @@ MEASURED_DIR      = DATA_DIR / "measured"
 # ── 原始数据（外部大硬盘）─────────────────────────
 RAW_MEA_DIR     = Path(RAW_MEA_ROOT)
 RAW_CALI_DIR    = Path(RAW_CALI_ROOT)
+
+# ── 张家口（zjk）测量数据集，可选 ──────────────────
+ZJK_RAW_DIR          = Path(ZJK_RAW_ROOT) if ZJK_RAW_ROOT else None
+ZJK_SAGE_OUTPUTS_DIR = Path(ZJK_SAGE_OUTPUTS_ROOT) if ZJK_SAGE_OUTPUTS_ROOT else None

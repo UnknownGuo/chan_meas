@@ -1095,13 +1095,14 @@ def build_dataset_from_arrays(
     delay_gate_distance_m: float = 2000.0,
     b2b_cir: np.ndarray | None = None,
     b2b_attenuation_db: float = 0.0,
+    b2b_regularization: float = 1e-3,
 ) -> dict[str, Any]:
     """Build the JSON-serializable frontend dataset from processed arrays."""
     # B2B frequency-domain calibration if a reference pulse is provided.
     if b2b_cir is not None and b2b_cir.size > 0:
         ref = np.asarray(b2b_cir[0], dtype=np.complex128)
         cir = regularized_frequency_calibrate(
-            cir, ref, regularization=1e-3, axis=1, attenuation_db=b2b_attenuation_db
+            cir, ref, regularization=b2b_regularization, axis=1, attenuation_db=b2b_attenuation_db
         )
     n_frames = int(cir.shape[0])
     time_step = max(1, int(round(frame_rate_hz)))  # 1 frame per second
@@ -1224,6 +1225,7 @@ def build_measurement_dataset(
     delay_gate_distance_m: float = 2000.0,
     b2b_cir: np.ndarray | None = None,
     b2b_attenuation_db: float = 0.0,
+    b2b_regularization: float = 1e-3,
 ) -> dict[str, Any]:
     """Read Rx .bin data and build a compact frontend dataset."""
     rx = Path(rx_path)
@@ -1249,6 +1251,7 @@ def build_measurement_dataset(
         delay_gate_distance_m=delay_gate_distance_m,
         b2b_cir=b2b_cir,
         b2b_attenuation_db=b2b_attenuation_db,
+        b2b_regularization=b2b_regularization,
     )
 
 

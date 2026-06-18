@@ -26,10 +26,10 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.calibration.b2b_frequency import regularized_frequency_calibrate
+from src.calibration.constants import ZJK_B2B_ATTENUATION_DB, ZJK_B2B_REGULARIZATION
 from src.io.bin_read import BW_HZ, FRAME_LEN, FRAME_RATE_HZ, _load_frames, _parse_gps, _parse_iq, _sliding_correlate
 from scripts.generate_adaptive_sage_gps_maps import _make_map, _window_centers, _write_summary, _write_window_csv
 from scripts.run_adaptive_sage_w20_step100_remaining import (
-    B2B_ATTENUATION_DB,
     MAX_DELAY_BINS,
     WINDOW,
     STEP,
@@ -87,9 +87,9 @@ def crop_pdp_waterfall() -> None:
     cir = regularized_frequency_calibrate(
         _sliding_correlate(_parse_iq(frames)),
         b2b_ref,
-        regularization=1e-3,
+        regularization=ZJK_B2B_REGULARIZATION,
         axis=1,
-        attenuation_db=B2B_ATTENUATION_DB,
+        attenuation_db=ZJK_B2B_ATTENUATION_DB,
     )
     pos = {int(idx): i for i, idx in enumerate(needed)}
 
