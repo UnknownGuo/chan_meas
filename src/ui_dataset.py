@@ -19,6 +19,7 @@ import numpy as np
 
 from src.io.bin_read import BW_HZ, FRAME_RATE_HZ, U, _load_frames, _parse_gps, _parse_iq, _sliding_correlate
 from src.signal.delay_doppler_sage import estimate_window_paths
+from src.signal.music_delay import estimate_window_delays_music
 from src.signal.sage_adaptive import estimate_window_paths_adaptive
 from src.calibration.b2b_frequency import regularized_frequency_calibrate
 
@@ -933,8 +934,10 @@ def compute_adaptive_sage_tracks(
     delay_gate_distance_m: float = 2000.0,
     max_delay_bins: int = 300,
     coverage_target: float = 0.95,
+    min_coverage_gain: float = 0.005,
     max_paths_hard: int = 30,
     use_hann_window: bool = True,
+    enable_weak_nonprominent_prune: bool = True,
 ) -> dict[str, Any]:
     """Adaptive SAGE with B2B-calibrated CIR and coverage-based termination.
 
@@ -974,8 +977,10 @@ def compute_adaptive_sage_tracks(
             bandwidth_hz=bandwidth_hz,
             frame_rate_hz=frame_rate_hz,
             coverage_target=coverage_target,
+            min_coverage_gain=min_coverage_gain,
             max_paths_hard=max_paths_hard,
             use_hann_window=use_hann_window,
+            enable_weak_nonprominent_prune=enable_weak_nonprominent_prune,
         )
         peaks: list[dict[str, Any]] = []
         for p in detailed.final_paths:
@@ -1004,18 +1009,119 @@ def compute_adaptive_sage_tracks(
             "delayGateDistanceM": _finite_float(delay_gate_distance_m, digits=3),
             "delayGateNs": [0.0, _finite_float(gate_ns_max, digits=3)],
             "peaks": peaks,
+            "origEnergyDb": _finite_float(detailed.orig_energy_db, digits=3),
+            "finalCoverageRatio": _finite_float(detailed.final_coverage_ratio, digits=4),
         })
+    coverage_ratios = [wt["finalCoverageRatio"] for wt in window_tracks if wt["finalCoverageRatio"] is not None]
+    coverage_summary = (
+        {
+            "meanCoverageRatio": _finite_float(float(np.mean(coverage_ratios)), digits=4),
+            "minCoverageRatio": _finite_float(float(np.min(coverage_ratios)), digits=4),
+            "p10CoverageRatio": _finite_float(float(np.percentile(coverage_ratios, 10)), digits=4),
+        }
+        if coverage_ratios
+        else None
+    )
     return {
         "mock": False,
-        "method": "adaptive_sage_coverage_095",
+        "method": f"adaptive_sage_coverage_{int(round(coverage_target * 100)):03d}",
         "delayGateDistanceM": _finite_float(delay_gate_distance_m, digits=3),
         "delayGateNs": [0.0, _finite_float(gate_ns_max, digits=3)],
         "windowSizeFrames": win,
         "stepFrames": step,
         "windowTracks": window_tracks,
         "tracks": flat_tracks,
+        "coverageSummary": coverage_summary,
     }
 
+
+def compute_music_delay_tracks(
+    cir: np.ndarray,
+    *,
+    bandwidth_hz: float = BW_HZ,
+    frame_rate_hz: float = FRAME_RATE_HZ,
+    window_size_frames: int = 20,
+    step_frames: int = 100,
+    max_delay_bins: int = 300,
+    subarray_ratio: float = 0.586,
+    max_order: int = 40,
+    max_paths: int = 30,
+) -> dict[str, Any]:
+    """Frequency-domain MUSIC delay tracks, mirroring the SAGE track structure.
+
+    Single-antenna delay-domain MUSIC: each window yields delay + power MPCs
+    (no Doppler, no phase).  Power is read from the window PDP; complex
+    amplitude is synthesized as ``sqrt(10**(P/10))`` so the existing Module-B
+    consumers (which use ``|amplitude|**2``) work unchanged.  ``dopplerHz`` is
+    set to 0 — MUSIC here does not estimate Doppler.
+    """
+    if cir.ndim != 2:
+        raise ValueError(f"cir must be 2D, got shape={cir.shape}")
+    n_frames, n_delay = cir.shape
+    if n_frames == 0 or n_delay == 0:
+        raise ValueError("cir is empty")
+    win = max(4, min(int(window_size_frames), n_frames))
+    step = max(1, int(step_frames))
+    hi_bin = min(int(max_delay_bins), n_delay)
+    gate_ns_max = float(hi_bin / float(bandwidth_hz) * 1e9)
+
+    window_starts = np.arange(0, n_frames - win + 1, step, dtype=np.int64)
+    if window_starts.size == 0:
+        window_starts = np.array([0], dtype=np.int64)
+
+    flat_tracks: list[dict[str, Any]] = []
+    window_tracks: list[dict[str, Any]] = []
+    for start_raw in window_starts:
+        end = int(min(int(start_raw) + win, n_frames))
+        start = int(max(0, end - win))
+        center = start + (end - start) // 2
+        segment = cir[start:end, :]
+        estimates = estimate_window_delays_music(
+            segment,
+            bandwidth_hz=bandwidth_hz,
+            subarray_ratio=subarray_ratio,
+            max_order=max_order,
+            min_delay_bin=0,
+            max_delay_bin=hi_bin,
+            max_paths=max_paths,
+        )
+        peaks: list[dict[str, Any]] = []
+        for path_id, e in enumerate(estimates, start=1):
+            amp = float(np.sqrt(10.0 ** (e.power_db / 10.0)))
+            peak = {
+                "frame": center,
+                "timeSec": _finite_float(center / float(frame_rate_hz), digits=6),
+                "frameStart": start,
+                "frameEnd": end,
+                "delayBin": int(e.delay_bin),
+                "delayNs": _finite_float(e.delay_ns, digits=3),
+                "dopplerHz": 0.0,
+                "powerDb": _finite_float(e.power_db, digits=6),
+                "pathId": path_id,
+                "amplitudeReal": _finite_float(amp, digits=6),
+                "amplitudeImag": 0.0,
+                "mock": False,
+            }
+            peaks.append(peak)
+            flat_tracks.append(peak)
+        window_tracks.append({
+            "frame": center,
+            "timeSec": _finite_float(center / float(frame_rate_hz), digits=6),
+            "frameStart": start,
+            "frameEnd": end,
+            "delayGateNs": [0.0, _finite_float(gate_ns_max, digits=3)],
+            "peaks": peaks,
+        })
+    return {
+        "mock": False,
+        "method": "delay_music_mdl",
+        "dopplerAvailable": False,
+        "delayGateNs": [0.0, _finite_float(gate_ns_max, digits=3)],
+        "windowSizeFrames": win,
+        "stepFrames": step,
+        "windowTracks": window_tracks,
+        "tracks": flat_tracks,
+    }
 
 
 def _mpc_scatter_from_peaks(frame_stats: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1092,6 +1198,7 @@ def build_dataset_from_arrays(
     include_joint: bool = False,
     include_music: bool = False,
     include_sage: bool = False,
+    include_delay_music: bool = False,
     delay_gate_distance_m: float = 2000.0,
     b2b_cir: np.ndarray | None = None,
     b2b_attenuation_db: float = 0.0,
@@ -1104,6 +1211,7 @@ def build_dataset_from_arrays(
         cir = regularized_frequency_calibrate(
             cir, ref, regularization=b2b_regularization, axis=1, attenuation_db=b2b_attenuation_db
         )
+
     n_frames = int(cir.shape[0])
     time_step = max(1, int(round(frame_rate_hz)))  # 1 frame per second
     delay_ns, power_db = downsample_cir_power_db(
@@ -1161,8 +1269,21 @@ def build_dataset_from_arrays(
             step_frames=100,
             delay_gate_distance_m=delay_gate_distance_m,
             max_delay_bins=max_delay_bins,
-            coverage_target=0.95,
+            coverage_target=0.97,
+            min_coverage_gain=0.001,
             max_paths_hard=30,
+            enable_weak_nonprominent_prune=True,
+        )
+
+    music_tracks = None
+    if include_delay_music:
+        music_tracks = compute_music_delay_tracks(
+            cir,
+            bandwidth_hz=bandwidth_hz,
+            frame_rate_hz=frame_rate_hz,
+            window_size_frames=20,
+            step_frames=100,
+            max_delay_bins=max_delay_bins,
         )
 
     primary_tracks = sage_tracks if sage_tracks is not None else joint_tracks
@@ -1206,6 +1327,7 @@ def build_dataset_from_arrays(
         "mpcScatter": primary_tracks["tracks"] if primary_tracks is not None else _mpc_scatter_from_peaks(stats),
         "jointDelayDoppler": joint_tracks,
         "sageDelayDoppler": sage_tracks,
+        "musicDelay": music_tracks,
     }
     if joint_tracks is not None:
         dataset["musicMpc"] = joint_tracks
@@ -1222,6 +1344,7 @@ def build_measurement_dataset(
     include_joint: bool = False,
     include_music: bool = False,
     include_sage: bool = False,
+    include_delay_music: bool = False,
     delay_gate_distance_m: float = 2000.0,
     b2b_cir: np.ndarray | None = None,
     b2b_attenuation_db: float = 0.0,
@@ -1248,6 +1371,7 @@ def build_measurement_dataset(
         include_joint=include_joint,
         include_music=include_music,
         include_sage=include_sage,
+        include_delay_music=include_delay_music,
         delay_gate_distance_m=delay_gate_distance_m,
         b2b_cir=b2b_cir,
         b2b_attenuation_db=b2b_attenuation_db,
@@ -1266,6 +1390,7 @@ def export_measurement_dataset(
     include_joint: bool = False,
     include_music: bool = False,
     include_sage: bool = False,
+    include_delay_music: bool = False,
     delay_gate_distance_m: float = 2000.0,
 ) -> dict[str, Any]:
     """Build and write a frontend dataset JSON file."""
@@ -1278,6 +1403,7 @@ def export_measurement_dataset(
         include_joint=include_joint,
         include_music=include_music,
         include_sage=include_sage,
+        include_delay_music=include_delay_music,
         delay_gate_distance_m=delay_gate_distance_m,
     )
     out = Path(out_path)

@@ -51,6 +51,8 @@ class SageWindowEstimate:
     raw_metadata: list[dict[str, float | str]]
     pruned_candidates: list[SagePathEstimate]
     final_paths: list[SagePathEstimate]
+    orig_energy_db: float = 0.0
+    final_coverage_ratio: float = 0.0
 
 
 def _window_delay_power(segment: np.ndarray) -> np.ndarray:

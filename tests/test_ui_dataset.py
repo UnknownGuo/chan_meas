@@ -444,6 +444,6 @@ def test_build_dataset_from_arrays_includes_sage_tracks_when_requested():
     )
 
     assert "sageDelayDoppler" in dataset
-    assert dataset["sageDelayDoppler"]["method"] == "adaptive_sage_coverage_095"
+    assert dataset["sageDelayDoppler"]["method"] == "adaptive_sage_coverage_097"
     assert len(dataset["sageDelayDoppler"]["tracks"]) == 2
     assert dataset["mpcScatter"][0]["mock"] is False

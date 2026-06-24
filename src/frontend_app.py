@@ -21,6 +21,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from src.analysis.module_b import build_module_b_payload
 from src.paths import ZJK_RAW_DIR, ZJK_SAGE_OUTPUTS_DIR
 from src.pipeline.analyze import analyze_one
 
@@ -250,6 +251,35 @@ def create_app(dataset_dir: Path = DATASET_DIR) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/api/datasets/{name}/module-b")
+    def dataset_module_b(name: str, source: str = "sage") -> dict[str, Any]:
+        source_keys = {"sage": "sageDelayDoppler", "music": "musicDelay"}
+        if source not in source_keys:
+            raise HTTPException(status_code=400, detail=f"未知数据源 source={source!r}")
+        try:
+            ds = load_dataset_file(name, dataset_dir)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        if not (ds.get(source_keys[source]) or {}).get("windowTracks"):
+            label = "SAGE" if source == "sage" else "MUSIC"
+            raise HTTPException(
+                status_code=422,
+                detail=f"当前数据集不含 {label} 窗口结果，无法生成模块 B（MUSIC 需重新导出）",
+            )
+        cache_dir = dataset_dir / "module_b_cache"
+        cache_path = cache_dir / f"{Path(name).stem}_module_b_{source}.json"
+        if cache_path.exists():
+            return json.loads(cache_path.read_text(encoding="utf-8"))
+        try:
+            payload = build_module_b_payload(ds, source)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        return payload
 
     @app.get("/api/datasets/{name}")
     def dataset(name: str) -> dict[str, Any]:

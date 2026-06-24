@@ -131,6 +131,7 @@ def estimate_window_paths_adaptive(
     max_paths_hard: int = 30,
     coverage_delay_bins: int = 300,
     enable_weak_nonprominent_prune: bool = True,
+    weak_prune_noise_margin_db: float = 8.0,
 ) -> SageWindowEstimate:
     """Adaptive SAGE: add paths until reconstructed PDP coverage is met.
 
@@ -146,6 +147,13 @@ def estimate_window_paths_adaptive(
         Safety cap so we never spin forever.
     coverage_delay_bins :
         Number of leading delay bins used for the coverage metric.
+    weak_prune_noise_margin_db :
+        Minimum power above the window's noise floor (median of
+        ``robust_delay_power``) a path must have to survive pruning when its
+        local prominence is also below 3 dB.  Replaces a fixed threshold
+        relative to the strongest path, which over- or under-prunes as the
+        window's true dynamic range varies (e.g. near-field strong-LOS vs.
+        far-field strong-scatterer scenes).
     """
     if segment.ndim != 2:
         raise ValueError(f"segment must be 2D, got shape={segment.shape}")
@@ -181,8 +189,8 @@ def estimate_window_paths_adaptive(
     s_sum = np.zeros_like(x, dtype=np.complex128)
     coverage = 0.0
 
-    for path_id, cand in enumerate(candidates, start=1):
-        if path_id > max_paths_hard:
+    for cand in candidates:
+        if len(path_states) >= max_paths_hard:
             break
         delay_col0 = int(cand["delay_col"])
         dop_idx = int(cand.get("dop_idx", int(n_doppler_bins) // 2))
@@ -208,11 +216,28 @@ def estimate_window_paths_adaptive(
             amplitude=amp,
             kernel=kernel,
         )
-        s_sum += s_path
+
+        # Coverage check on a trial sum before committing this candidate.
+        # A candidate whose kernel overlaps an already-kept path can
+        # destructively interfere and *lower* total reconstructed energy
+        # (negative gain) without that meaning "no more real paths exist" —
+        # it just means this particular candidate is bad. Skip it and keep
+        # trying the rest of the candidate pool instead of giving up on the
+        # whole window.
+        s_sum_trial = s_sum + s_path
+        pdp_recon = np.mean(np.abs(s_sum_trial) ** 2, axis=0)
+        new_coverage = float(np.sum(pdp_recon[:n_cov]) / orig_energy)
+        gain = new_coverage - coverage
+
+        if gain < min_coverage_gain and path_states:
+            continue
+
+        s_sum = s_sum_trial
+        coverage = new_coverage
         s_list.append(s_path)
         path_states.append(
             {
-                "path_id": path_id,
+                "path_id": len(path_states) + 1,
                 "delay_col": int(delay_col),
                 "doppler_hz": float(fd),
                 "amplitude": complex(amp),
@@ -222,19 +247,7 @@ def estimate_window_paths_adaptive(
             }
         )
 
-        # Coverage check.
-        pdp_recon = np.mean(np.abs(s_sum) ** 2, axis=0)
-        new_coverage = float(np.sum(pdp_recon[:n_cov]) / orig_energy)
-        gain = new_coverage - coverage
-        coverage = new_coverage
-
         if coverage >= coverage_target:
-            break
-        if gain < min_coverage_gain and path_id >= 2:
-            # The last path contributed almost nothing; back it out.
-            s_sum -= s_path
-            s_list.pop()
-            path_states.pop()
             break
 
     # SAGE iterations over the kept paths.
@@ -270,7 +283,6 @@ def estimate_window_paths_adaptive(
     # Build raw results.
     raw_results: list[SagePathEstimate] = []
     raw_meta: list[dict[str, float | str]] = []
-    strongest_power_db = -np.inf
     for state in path_states:
         delay_col = int(state["delay_col"])
         if delay_col < 0 or delay_col >= len(delay_bins):
@@ -279,7 +291,6 @@ def estimate_window_paths_adaptive(
         amp = complex(state["amplitude"])
         power_db = 10.0 * np.log10(abs(amp) ** 2 + 1e-30)
         score_db = 10.0 * np.log10(float(state.get("score", 0.0)) + 1e-30)
-        strongest_power_db = max(strongest_power_db, float(power_db))
         raw_results.append(
             SagePathEstimate(
                 delay_col=delay_col,
@@ -304,6 +315,7 @@ def estimate_window_paths_adaptive(
         )
 
     # Prune: keep delay-diverse, drop very weak / non-prominent duplicates.
+    noise_floor_db = float(10.0 * np.log10(float(np.median(robust_delay_power)) + 1e-30))
     raw_pairs = list(zip(raw_results, raw_meta, strict=False))
     raw_pairs.sort(key=lambda pair: pair[0].power_db, reverse=True)
     pruned: list[SagePathEstimate] = []
@@ -311,9 +323,14 @@ def estimate_window_paths_adaptive(
     for item, meta in raw_pairs:
         if any(abs(item.delay_col - old.delay_col) <= final_sep for old in pruned):
             continue
-        rel_power_db = float(item.power_db - strongest_power_db)
+        margin_above_noise_db = float(item.power_db - noise_floor_db)
         local_prominence_db = float(meta["local_prominence_db"])
-        if pruned and enable_weak_nonprominent_prune and local_prominence_db < 3.0 and rel_power_db < -15.0:
+        if (
+            pruned
+            and enable_weak_nonprominent_prune
+            and local_prominence_db < 3.0
+            and margin_above_noise_db < weak_prune_noise_margin_db
+        ):
             continue
         pruned.append(item)
         if len(pruned) >= max_paths_hard:
@@ -321,9 +338,17 @@ def estimate_window_paths_adaptive(
     for idx, item in enumerate(pruned, start=1):
         item.path_id = idx
 
+    # Actual achieved coverage after refinement + pruning (may differ from the
+    # mid-loop `coverage` value, which was measured before SAGE iterations and
+    # before any path was pruned out).
+    final_recon_energy = float(sum(abs(p.amplitude) ** 2 for p in pruned))
+    final_coverage_ratio = final_recon_energy / orig_energy
+
     return SageWindowEstimate(
         raw_candidates=raw_results,
         raw_metadata=raw_meta,
         pruned_candidates=pruned,
         final_paths=pruned,
+        orig_energy_db=float(10.0 * np.log10(orig_energy + 1e-30)),
+        final_coverage_ratio=final_coverage_ratio,
     )
