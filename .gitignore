@@ -18,7 +18,14 @@ docs/specs/.obsidian/
 # 输出 / 临时文件
 outputs/
 report/
+tmp/
 *.png
+*.jpg
+*.jpeg
+
+# 解压分析目录 / 打包文件
+_zip_analysis_*/
+*.zip
 
 # 飞书同步状态
 .feishu-sync.json
