@@ -63,6 +63,10 @@ const AppState = {
   rxBinName: null,
   calBinName: null,
   pollTimer: null,
+  activeModule: 'A',        // 'A' | 'B'
+  moduleBInited: false,
+  moduleBSource: 'sage',     // 'sage' | 'music'
+  moduleB: { data: null, datasetName: null, source: null },
 };
 window.AppState = AppState;
 
@@ -131,6 +135,14 @@ function bindControls() {
   document.querySelectorAll('.export-fig-btn[data-chart]').forEach(btn =>
     btn.addEventListener('click', () => exportChartPng(btn.dataset.chart)));
   document.getElementById('exportCsvBtn').addEventListener('click', exportPdpCsv);
+
+  document.getElementById('moduleABtn').addEventListener('click', () => switchModule('A'));
+  document.getElementById('moduleBBtn').addEventListener('click', () => switchModule('B'));
+  document.getElementById('mbSourceSageBtn').addEventListener('click', () => setModuleBSource('sage'));
+  document.getElementById('mbSourceMusicBtn').addEventListener('click', () => setModuleBSource('music'));
+  document.getElementById('mbFadingModelSelect').addEventListener('change', () => rerenderModuleBModel('mbFading', 'multipathFading'));
+  document.getElementById('mbRmsDelayModelSelect').addEventListener('change', () => rerenderModuleBModel('mbRmsDelay', 'rmsDelaySpread'));
+  document.getElementById('mbRmsDopplerModelSelect').addEventListener('change', () => rerenderModuleBModel('mbRmsDoppler', 'rmsDopplerSpread'));
 }
 
 function chooseLocalFile(role) { AppState.selectedFileRole = role; document.getElementById('hiddenFileInput').click(); }
@@ -266,6 +278,7 @@ async function loadDatasetFromApi(name = 'default') {
     updateDopplerTime();
     syncFrame(0);
     setUiState('READY');
+    if (AppState.activeModule === 'B') loadModuleB();
   } catch (err) {
     setUiState('ERROR'); resetUI();
     document.getElementById('datasetStatus').textContent = '数据加载失败';
@@ -408,12 +421,14 @@ function updateMapPanel() {
   Object.values(AppState.leafletLayers).forEach(l => l && AppState.leafletMap.removeLayer(l));
   const rxLatLng = rx.map(p => [Number(p.lat), Number(p.lon)]).filter(p => Number.isFinite(p[0]) && Number.isFinite(p[1]));
   const txLatLng = [Number(tx.lat), Number(tx.lon)];
+  const txValid = Number.isFinite(txLatLng[0]) && Number.isFinite(txLatLng[1]);
   AppState.leafletLayers.rxLine = L.polyline(rxLatLng, { color: '#2474d2', weight: 3, opacity: 0.85 }).addTo(AppState.leafletMap);
-  AppState.leafletLayers.tx = L.circleMarker(txLatLng, { radius: 7, color: '#9d2a2a', fillColor: '#e55353', fillOpacity: 0.95 }).addTo(AppState.leafletMap).bindTooltip('Tx');
+  if (txValid) AppState.leafletLayers.tx = L.circleMarker(txLatLng, { radius: 7, color: '#9d2a2a', fillColor: '#e55353', fillOpacity: 0.95 }).addTo(AppState.leafletMap).bindTooltip('Tx');
   AppState.leafletLayers.rx = L.circleMarker([Number(cur.lat), Number(cur.lon)], { radius: 8, color: '#fff', weight: 3, fillColor: '#19a974', fillOpacity: 0.95 }).addTo(AppState.leafletMap).bindTooltip('当前 Rx');
-  const bounds = L.latLngBounds([...rxLatLng, txLatLng]);
+  // 关键：fitBounds 前先同步刷新容器尺寸，否则容器尺寸为 0 时会退化成世界视图。
+  AppState.leafletMap.invalidateSize();
+  const bounds = L.latLngBounds(txValid ? [...rxLatLng, txLatLng] : rxLatLng);
   if (bounds.isValid()) AppState.leafletMap.fitBounds(bounds.pad(0.18), { animate: false, maxZoom: 18 });
-  setTimeout(() => AppState.leafletMap.invalidateSize(), 0);
 }
 
 function updateStatusBar() {
@@ -484,6 +499,190 @@ function exportPdpCsv() {
 function rerenderAll() {
   if (AppState.uiState !== 'READY') return;
   updatePdpWaterfall(); updateDopplerWaterfall(); updateDelayTime(); updateDopplerTime(); updatePdpCurve();
+}
+
+// ---------------- 模块 B：实测路损 + 统计特性（基于 SAGE 窗口结果） ----------------
+// 数据源/算法定义: docs/specs/2026-06-18-sage-ui-merge-plan.md + src/analysis/module_b.py
+// 路损/K因子用 SAGE 多径功率非相干求和（不是该 spec 原始草案里的复振幅相干求和，
+// 原因见对话记录：SAGE 相位估计稳定性未验证，相干求和会被放大误差）。
+
+function initModuleBLayout() {
+  AppState.charts.mbPathLoss = echarts.init(document.getElementById('mbPathLossChart'));
+  AppState.charts.mbShadow = echarts.init(document.getElementById('mbShadowChart'));
+  AppState.charts.mbFading = echarts.init(document.getElementById('mbFadingChart'));
+  AppState.charts.mbKFactor = echarts.init(document.getElementById('mbKFactorChart'));
+  AppState.charts.mbRmsDelay = echarts.init(document.getElementById('mbRmsDelayChart'));
+  AppState.charts.mbRmsDoppler = echarts.init(document.getElementById('mbRmsDopplerChart'));
+}
+
+function switchModule(target) {
+  AppState.activeModule = target;
+  document.getElementById('moduleAView').hidden = target !== 'A';
+  document.getElementById('moduleBView').hidden = target !== 'B';
+  document.getElementById('moduleABtn').classList.toggle('active', target === 'A');
+  document.getElementById('moduleBBtn').classList.toggle('active', target === 'B');
+  if (target === 'B') {
+    if (!AppState.moduleBInited) { initModuleBLayout(); AppState.moduleBInited = true; }
+    loadModuleB();
+  } else {
+    Object.values(AppState.charts).forEach(c => c.resize());
+    // 模块A 重新可见：地图容器尺寸恢复后重新定位（数据可能是在模块B隐藏时加载的）。
+    if (AppState.leafletMap) { AppState.leafletMap.invalidateSize(); updateMapPanel(); }
+  }
+}
+
+function setModuleBSource(source) {
+  if (AppState.moduleBSource === source) return;
+  AppState.moduleBSource = source;
+  document.getElementById('mbSourceSageBtn').classList.toggle('active', source === 'sage');
+  document.getElementById('mbSourceMusicBtn').classList.toggle('active', source === 'music');
+  if (AppState.activeModule === 'B') loadModuleB();
+}
+
+async function loadModuleB() {
+  const panel = document.getElementById('mbInfoPanel');
+  const source = AppState.moduleBSource;
+  if (!AppState.datasetName) { panel.innerHTML = '<div class="info-item"><span>请先加载数据集</span></div>'; return; }
+  if (AppState.moduleB.datasetName === AppState.datasetName && AppState.moduleB.source === source && AppState.moduleB.data) {
+    renderModuleB(AppState.moduleB.data);
+    return;
+  }
+  panel.innerHTML = '<div class="info-item"><span>加载中…</span></div>';
+  try {
+    const res = await fetch(`/api/datasets/${encodeURIComponent(AppState.datasetName)}/module-b?source=${source}`);
+    if (!res.ok) {
+      const detail = (await res.json().catch(() => ({}))).detail || res.status;
+      throw new Error(detail);
+    }
+    const payload = await res.json();
+    AppState.moduleB = { data: payload, datasetName: AppState.datasetName, source };
+    renderModuleB(payload);
+  } catch (err) {
+    panel.innerHTML = `<div class="info-item"><span>模块 B（${source.toUpperCase()}）加载失败：${err.message}</span></div>`;
+    console.error(err);
+  }
+}
+
+function renderModuleB(payload) {
+  renderPathLossChart(payload.pathLoss);
+  renderPdfChart(AppState.charts.mbShadow, payload.shadowFading.samplesDb, payload.shadowFading.pdf, 'Shadow Fading (dB)');
+  populateModelSelect('mbFadingModelSelect', payload.multipathFading.models, payload.multipathFading.defaultModel);
+  rerenderModuleBModel('mbFading', 'multipathFading');
+  renderPdfChart(AppState.charts.mbKFactor, payload.kFactor.samplesDb, payload.kFactor.pdf, 'K-factor (dB)');
+  populateModelSelect('mbRmsDelayModelSelect', payload.rmsDelaySpread.models, payload.rmsDelaySpread.defaultModel);
+  rerenderModuleBModel('mbRmsDelay', 'rmsDelaySpread');
+
+  const dopplerAvailable = (payload.meta || {}).dopplerAvailable !== false;
+  const dopplerSelect = document.getElementById('mbRmsDopplerModelSelect');
+  dopplerSelect.disabled = !dopplerAvailable;
+  if (dopplerAvailable) {
+    populateModelSelect('mbRmsDopplerModelSelect', payload.rmsDopplerSpread.models, payload.rmsDopplerSpread.defaultModel);
+    rerenderModuleBModel('mbRmsDoppler', 'rmsDopplerSpread');
+  } else {
+    AppState.charts.mbRmsDoppler.clear();
+    AppState.charts.mbRmsDoppler.setOption({
+      title: { text: 'MUSIC 不提供多普勒', subtext: '该方法仅估计时延', left: 'center', top: 'center',
+        textStyle: { fontSize: 14, color: '#888' }, subtextStyle: { fontSize: 12, color: '#aaa' } },
+    }, true);
+  }
+
+  const hint = document.getElementById('mbSourceHint');
+  if (hint) hint.textContent = `当前：${(payload.meta || {}).source === 'music' ? 'MUSIC 时延谱' : 'SAGE 时延-多普勒'} · ${payload.meta.nWindows} 窗`;
+  renderModuleBInfo(payload);
+}
+
+function renderPathLossChart(pathLoss) {
+  const scatterData = pathLoss.distanceM.map((d, i) => [d, pathLoss.measuredDb[i]]);
+  const fitData = pathLoss.fit.xDistanceM.map((d, i) => [d, pathLoss.fit.yFitDb[i]]).sort((a, b) => a[0] - b[0]);
+  AppState.charts.mbPathLoss.setOption({
+    tooltip: { trigger: 'item', formatter: p => Array.isArray(p.data) ? `distance=${p.data[0].toFixed(1)} m<br/>power=${p.data[1].toFixed(2)} dB` : '' },
+    grid: { left: 56, right: 20, top: 16, bottom: 40 },
+    xAxis: { type: 'log', name: 'Distance (m)', nameLocation: 'middle', nameGap: 28 },
+    yAxis: { type: 'value', name: 'Power (dB)', scale: true },
+    legend: { top: 0, right: 0, textStyle: { fontSize: 11 } },
+    series: [
+      { type: 'scatter', name: 'Measurement', symbolSize: 5, data: scatterData, itemStyle: { color: '#2474d2', opacity: 0.6 } },
+      { type: 'line', name: 'Fit', data: fitData, showSymbol: false, lineStyle: { color: '#d24724', width: 2.5 } },
+    ],
+    ...axisPointerOpt(),
+  }, true);
+}
+
+function histogramBins(samples, nBins = 24) {
+  const finite = (samples || []).filter(Number.isFinite);
+  if (!finite.length) return [];
+  const lo = Math.min(...finite), hi = Math.max(...finite);
+  const width = (hi - lo) / nBins || 1;
+  const counts = new Array(nBins).fill(0);
+  finite.forEach(v => {
+    let idx = Math.floor((v - lo) / width);
+    if (idx >= nBins) idx = nBins - 1;
+    if (idx < 0) idx = 0;
+    counts[idx]++;
+  });
+  return counts.map((c, i) => [lo + (i + 0.5) * width, c / (finite.length * width)]);
+}
+
+function renderPdfChart(chart, samples, pdf, xLabel) {
+  const hist = histogramBins(samples);
+  const series = [{ type: 'bar', name: 'samples', data: hist, barWidth: '99%', itemStyle: { color: 'rgba(36,116,210,0.35)' } }];
+  if (pdf) {
+    const line = pdf.x.map((x, i) => [x, pdf.y[i]]);
+    series.push({ type: 'line', name: pdf.model, data: line, showSymbol: false, lineStyle: { color: '#d24724', width: 2.5 } });
+  }
+  chart.setOption({
+    tooltip: { trigger: 'axis' },
+    grid: { left: 50, right: 16, top: 16, bottom: 40 },
+    xAxis: { type: 'value', name: xLabel, nameLocation: 'middle', nameGap: 28, scale: true },
+    yAxis: { type: 'value', name: 'PDF' },
+    series,
+    ...axisPointerOpt(),
+  }, true);
+}
+
+function populateModelSelect(selectId, models, defaultModel) {
+  const sel = document.getElementById(selectId);
+  const available = Object.keys(models || {}).filter(k => models[k]);
+  sel.innerHTML = '';
+  available.forEach(name => {
+    const opt = document.createElement('option');
+    opt.value = name; opt.textContent = name;
+    if (name === defaultModel) opt.selected = true;
+    sel.appendChild(opt);
+  });
+  if (!available.includes(defaultModel) && available.length) sel.value = available[0];
+}
+
+function rerenderModuleBModel(chartKey, sectionKey) {
+  const payload = AppState.moduleB.data;
+  if (!payload) return;
+  const section = payload[sectionKey];
+  const samples = section.samples ?? section.samplesNs ?? section.samplesHz;
+  const selectId = { mbFading: 'mbFadingModelSelect', mbRmsDelay: 'mbRmsDelayModelSelect', mbRmsDoppler: 'mbRmsDopplerModelSelect' }[chartKey];
+  const modelName = document.getElementById(selectId).value;
+  const xLabel = { mbFading: 'Amplitude (linear)', mbRmsDelay: 'RMS Delay Spread (ns)', mbRmsDoppler: 'RMS Doppler Spread (Hz)' }[chartKey];
+  renderPdfChart(AppState.charts[chartKey], samples, (section.models || {})[modelName], xLabel);
+}
+
+function renderModuleBInfo(payload) {
+  const meta = payload.meta || {};
+  const ple = payload.pathLoss?.fit?.params?.ple;
+  const r2 = payload.pathLoss?.fit?.params?.r2;
+  const kMu = payload.kFactor?.pdf?.params?.mu;
+  const kSigma = payload.kFactor?.pdf?.params?.sigma;
+  const items = [
+    ['数据集', meta.datasetName ?? '--'],
+    ['窗口/步长 (帧)', `${meta.windowSizeFrames ?? '--'} / ${meta.stepFrames ?? '--'}`],
+    ['窗口数', meta.nWindows ?? '--'],
+    ['路损样本数', payload.pathLoss?.distanceM?.length ?? '--'],
+    ['路径损耗指数 PLE', Number.isFinite(ple) ? ple.toFixed(3) : '--'],
+    ['拟合 R²', Number.isFinite(r2) ? r2.toFixed(3) : '--'],
+    ['阴影衰落 σ (dB)', Number.isFinite(payload.shadowFading?.pdf?.params?.sigma) ? payload.shadowFading.pdf.params.sigma.toFixed(2) : '--'],
+    ['K 因子 (高斯拟合, dB)', Number.isFinite(kMu) ? `μ=${kMu.toFixed(2)}, σ=${kSigma.toFixed(2)}` : '--'],
+    ['RMS时延扩展样本数（已排除0值窗口）', `${payload.rmsDelaySpread?.samplesNs?.length ?? '--'}（排除 ${payload.rmsDelaySpread?.excludedZeroSpreadWindows ?? '--'}）`],
+  ];
+  document.getElementById('mbInfoPanel').innerHTML = items.map(([label, val]) =>
+    `<div class="info-item"><b>${label}</b><span>${val}</span></div>`).join('');
 }
 
 // ---------------- 工具 ----------------

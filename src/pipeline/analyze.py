@@ -43,6 +43,7 @@ def analyze_one(
         max_delay_bins=300,
         relative_power=False,
         include_sage=True,
+        include_delay_music=True,
         b2b_cir=b2b_cir,
         b2b_attenuation_db=ZJK_B2B_ATTENUATION_DB,
         b2b_regularization=ZJK_B2B_REGULARIZATION,

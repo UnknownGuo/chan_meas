@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>信道测量分析软件</title>
-  <link rel="stylesheet" href="/static/styles.css?v=20260616-redesign" />
+  <link rel="stylesheet" href="/static/styles.css?v=20260624-geocal" />
   <link rel="stylesheet" href="/static/leaflet.css" />
   <script src="/static/echarts.min.js"></script>
   <script src="/static/leaflet.js"></script>
@@ -20,6 +20,10 @@
         <span id="backendStatus" class="status-pill warning">后端检查中</span>
         <span id="datasetStatus" class="status-pill muted">数据未加载</span>
         <select id="datasetSelect" class="dataset-select" aria-label="选择已分析数据集"></select>
+        <div class="module-switch" role="group" aria-label="页面模块切换">
+          <button id="moduleABtn" class="module-btn active" type="button">模块 A</button>
+          <button id="moduleBBtn" class="module-btn" type="button">模块 B</button>
+        </div>
       </div>
     </header>
 
@@ -57,6 +61,7 @@
           <input id="txLon" type="number" step="0.000001" placeholder="经度 lon" />
           <input id="txAlt" type="number" step="0.1" placeholder="高程 alt(m)" />
         </div>
+
         <button id="txBinBtn" class="secondary-btn full-width" disabled hidden>加载 Tx bin（待开发）</button>
 
         <button id="importBtn" class="secondary-btn full-width">导入</button>
@@ -89,6 +94,7 @@
     </aside>
 
     <main class="main-content panel-scroll">
+      <section id="moduleAView">
       <section id="statusBar" class="status-bar">
         <span class="status-item"><b>场景</b><i id="sbScene">--</i></span>
         <span class="status-item"><b>Tx 模式</b><i id="sbTxMode">--</i></span>
@@ -138,9 +144,71 @@
           </div>
         </article>
       </section>
+      </section>
+
+      <section id="moduleBView" hidden>
+        <div class="mb-toolbar">
+          <span class="mb-toolbar-label">多径来源</span>
+          <div class="module-switch" role="group" aria-label="模块 B 多径来源切换">
+            <button id="mbSourceSageBtn" class="module-btn active" type="button">SAGE</button>
+            <button id="mbSourceMusicBtn" class="module-btn" type="button">MUSIC</button>
+          </div>
+          <span id="mbSourceHint" class="mb-toolbar-hint"></span>
+        </div>
+        <div class="module-b-row module-b-row-2">
+          <article class="chart-card">
+            <div class="card-title-row"><h3>实测路损（SAGE 多径功率非相干求和）</h3><button class="export-fig-btn" data-chart="mbPathLoss">导出图</button></div>
+            <div id="mbPathLossChart" class="chart"></div>
+          </article>
+          <article class="chart-card">
+            <div class="card-title-row"><h3>阴影衰落 PDF</h3><button class="export-fig-btn" data-chart="mbShadow">导出图</button></div>
+            <div id="mbShadowChart" class="chart"></div>
+          </article>
+        </div>
+        <div class="module-b-row module-b-row-4">
+          <article class="chart-card">
+            <div class="card-title-row">
+              <h3>多径衰落 PDF</h3>
+              <div class="title-actions">
+                <select id="mbFadingModelSelect" class="model-select" aria-label="多径衰落拟合模型"></select>
+                <button class="export-fig-btn" data-chart="mbFading">导出图</button>
+              </div>
+            </div>
+            <div id="mbFadingChart" class="chart"></div>
+          </article>
+          <article class="chart-card">
+            <div class="card-title-row"><h3>莱斯 K 因子 PDF</h3><button class="export-fig-btn" data-chart="mbKFactor">导出图</button></div>
+            <div id="mbKFactorChart" class="chart"></div>
+          </article>
+          <article class="chart-card">
+            <div class="card-title-row">
+              <h3>RMS 时延扩展 PDF</h3>
+              <div class="title-actions">
+                <select id="mbRmsDelayModelSelect" class="model-select" aria-label="RMS时延扩展拟合模型"></select>
+                <button class="export-fig-btn" data-chart="mbRmsDelay">导出图</button>
+              </div>
+            </div>
+            <div id="mbRmsDelayChart" class="chart"></div>
+          </article>
+          <article class="chart-card">
+            <div class="card-title-row">
+              <h3>RMS Doppler 扩展 PDF</h3>
+              <div class="title-actions">
+                <select id="mbRmsDopplerModelSelect" class="model-select" aria-label="RMS Doppler扩展拟合模型"></select>
+                <button class="export-fig-btn" data-chart="mbRmsDoppler">导出图</button>
+              </div>
+            </div>
+            <div id="mbRmsDopplerChart" class="chart"></div>
+          </article>
+        </div>
+        <article class="chart-card info-card">
+          <div class="card-title-row"><h3>参数与结果说明</h3></div>
+          <div id="mbInfoPanel" class="info-grid"></div>
+        </article>
+      </section>
     </main>
   </div>
 
-  <script src="/static/app.js?v=20260616-redesign"></script>
+  <script src="/static/app.js?v=20260624-geocal"></script>
 </body>
 </html>

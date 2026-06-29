@@ -1,4 +1,5 @@
-"""Export B2B-calibrated + adaptive-SAGE UI datasets for the 5 special files."""
+"""Export B2B-calibrated + adaptive-SAGE UI datasets for every measurement .bin
+file under the zjk_mea raw data directory (excludes cali_data.bin)."""
 from __future__ import annotations
 import json, sys
 from pathlib import Path
@@ -9,18 +10,13 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.calibration.constants import ZJK_B2B_ATTENUATION_DB, ZJK_B2B_REGULARIZATION
+from src.paths import ZJK_RAW_DIR
 from src.ui_dataset import build_measurement_dataset
 from src.io.bin_read import FRAME_LEN
 
-FILES = [
-    Path("/mnt/win_data/data_mea/zjk_mea/0m-0m-all-first-antenna-daquan.bin"),
-    Path("/mnt/win_data/data_mea/zjk_mea/0m-0m-all-second-antenna-xiaoquan.bin"),
-    Path("/mnt/win_data/data_mea/zjk_mea/0m-0m-all-firstantenna-xiaoquan.bin"),
-    Path("/mnt/win_data/data_mea/zjk_mea/0m-0m-all-firstantenna-rotate-sunrotate.bin"),
-    Path("/mnt/win_data/data_mea/zjk_mea/0m-0m-all-firstanteaan-rotate.bin"),
-]
+FILES = sorted(p for p in ZJK_RAW_DIR.glob("*.bin") if p.stem != "cali_data")
 
-B2B_PATH = Path("/mnt/win_data/data_mea/zjk_mea/calibration/b2b_cir.npy")
+B2B_PATH = ZJK_RAW_DIR / "calibration" / "b2b_cir.npy"
 OUT_DIR = ROOT / "data" / "ui_samples"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
