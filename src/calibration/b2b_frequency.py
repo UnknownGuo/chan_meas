@@ -29,7 +29,7 @@ def regularized_frequency_calibrate(
     (un-attenuated) system gain instead of inheriting the attenuator's loss
     as spurious output gain.
     """
-    measured = np.asarray(measured_cir, dtype=np.complex128)
+    measured = np.asarray(measured_cir)
     b2b = np.asarray(b2b_cir, dtype=np.complex128)
     if attenuation_db:
         b2b = b2b * (10.0 ** (float(attenuation_db) / 20.0))
@@ -38,7 +38,7 @@ def regularized_frequency_calibrate(
             f"delay dimension mismatch: measured axis {axis} has {measured.shape[axis]} bins, "
             f"b2b has {b2b.shape[-1]} bins"
         )
-    h_meas = np.fft.fft(measured, axis=axis)
+    # B2B 参考的频域响应只需计算一次（小），measured 才是大头。
     h_b2b = np.fft.fft(b2b, axis=-1)
     power = np.abs(h_b2b) ** 2
     lam = float(regularization)
@@ -47,17 +47,28 @@ def regularized_frequency_calibrate(
     if lam < 1.0:
         lam = lam * float(np.max(power) + 1e-30)
     denom = power + lam + 1e-30
-    # reshape b2b frequency response for broadcasting if measured is stacked
-    if measured.ndim > 1:
-        shape = [1] * measured.ndim
-        shape[axis] = h_b2b.shape[-1]
-        h_b2b_b = h_b2b.reshape(shape)
-        denom_b = denom.reshape(shape)
-    else:
-        h_b2b_b = h_b2b
-        denom_b = denom
-    h_cal = h_meas * np.conj(h_b2b_b) / denom_b
-    return np.fft.ifft(h_cal, axis=axis).astype(np.complex128)
+
+    # 单条 CIR：直接处理。
+    if measured.ndim == 1:
+        h_meas = np.fft.fft(measured.astype(np.complex128), axis=axis)
+        h_cal = h_meas * np.conj(h_b2b) / denom
+        return np.fft.ifft(h_cal, axis=axis).astype(np.complex64)
+
+    # 堆叠 CIR（n_frames, n_delay）：沿帧轴分块、原地写回 complex64，
+    # 避免一次性分配整段 complex128 副本（大数据集会 OOM，见报告）。每帧校准相互独立。
+    shape = [1] * measured.ndim
+    shape[axis] = h_b2b.shape[-1]
+    h_b2b_b = np.conj(h_b2b).reshape(shape)
+    denom_b = denom.reshape(shape)
+    out = measured if measured.dtype == np.complex64 else measured.astype(np.complex64)
+    chunk = 4096
+    for lo in range(0, measured.shape[0], chunk):
+        hi = min(lo + chunk, measured.shape[0])
+        m = measured[lo:hi].astype(np.complex128)
+        h_meas = np.fft.fft(m, axis=axis)
+        h_cal = h_meas * h_b2b_b / denom_b
+        out[lo:hi] = np.fft.ifft(h_cal, axis=axis).astype(np.complex64)
+    return out
 
 
 def normalize_pulse_kernel(kernel: np.ndarray) -> np.ndarray:

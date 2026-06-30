@@ -57,7 +57,8 @@ def _nearest_distance(window: dict[str, Any], frame_stats: list[dict[str, Any]])
     best = None
     best_key = None
     for item in frame_stats:
-        if "distanceM" not in item:
+        dval = item.get("distanceM")
+        if dval is None:  # 无 TX 时 distanceM 为 None，跳过
             continue
         key = (
             abs(float(item.get("frame", target_frame)) - target_frame),
@@ -65,7 +66,7 @@ def _nearest_distance(window: dict[str, Any], frame_stats: list[dict[str, Any]])
         )
         if best_key is None or key < best_key:
             best_key = key
-            best = float(item["distanceM"])
+            best = float(dval)
     return best
 
 
@@ -306,8 +307,14 @@ def build_module_b_payload(dataset: dict[str, Any], source: str = "sage") -> dic
     doppler_available = source != "music"
 
     path_loss = compute_path_loss_series(dataset, source)
-    fit = fit_log_distance_curve(path_loss["distanceM"], path_loss["measuredDb"])
-    shadow_samples = np.asarray(fit["residualDb"], dtype=float)
+    # TX 距离可选：有距离才算路损/阴影拟合，否则这两项留空、其余分析照常。
+    has_distance = len(path_loss["distanceM"]) >= 2
+    if has_distance:
+        fit = fit_log_distance_curve(path_loss["distanceM"], path_loss["measuredDb"])
+        shadow_samples = np.asarray(fit["residualDb"], dtype=float)
+    else:
+        fit = None
+        shadow_samples = np.array([], dtype=float)
     fading_samples = _multipath_fading_samples(windows)
     k_samples_db = _k_factor_samples_db(windows)
 
@@ -338,6 +345,7 @@ def build_module_b_payload(dataset: dict[str, Any], source: str = "sage") -> dic
             "windowSizeFrames": int(sage_meta.get("windowSizeFrames", 0)),
             "stepFrames": int(sage_meta.get("stepFrames", 0)),
             "nWindows": len(windows),
+            "hasDistance": has_distance,
             "fitModels": {
                 "fading": ["rayleigh", "rice", "nakagami"],
                 "kFactor": ["moment", "rice_fit"],
@@ -347,17 +355,18 @@ def build_module_b_payload(dataset: dict[str, Any], source: str = "sage") -> dic
         },
         "pathLoss": {
             **path_loss,
-            "fit": {
+            "hasDistance": has_distance,
+            "fit": ({
                 "model": fit["model"],
                 "xDistanceM": fit["xDistanceM"],
                 "yFitDb": fit["yFitDb"],
                 "params": fit["params"],
-            },
-            "shadowResidualDb": fit["residualDb"],
+            } if fit is not None else None),
+            "shadowResidualDb": (fit["residualDb"] if fit is not None else []),
         },
         "shadowFading": {
             "samplesDb": shadow_samples.round(6).tolist(),
-            "pdf": _fit_gaussian_pdf(shadow_samples),
+            "pdf": (_fit_gaussian_pdf(shadow_samples) if shadow_samples.size else None),
         },
         "multipathFading": {
             "samples": fading_samples.round(6).tolist(),

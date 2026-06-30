@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-将 zjk_mea 下所有 *_gps.txt 合并到单独文件夹，
+将测量目录下所有 *_gps.txt 合并到单独文件夹，
 并对每个文件去除重复的 GPS 记录（基于 lat/lon/alt/hour/minute/second）。
 """
 
 from pathlib import Path
 import pandas as pd
 
-SRC_DIR = Path("/mnt/win_data/data_mea/zjk_mea")
+SRC_DIR = Path("raw_bins")  # 改为你的本地测量目录
 OUT_DIR = SRC_DIR / "gps_txt"
 OUT_DIR.mkdir(exist_ok=True)
 

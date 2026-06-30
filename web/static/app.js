@@ -112,7 +112,7 @@ function initLeafletMap() {
   if (!el) return;
   AppState.leafletMap = L.map(el, { preferCanvas: true, zoomControl: true });
   L.tileLayer('/tiles/base/{z}/{x}/{y}.jpg', { maxZoom: 19, attribution: 'Tiles &copy; Esri' }).addTo(AppState.leafletMap);
-  AppState.leafletMap.setView([40.3032, 115.7719], 17);
+  AppState.leafletMap.setView([0, 0], 2);  // 中性初始视角；加载数据后按 RX 轨迹自动 fitBounds
 }
 
 // ---------------- 控件绑定 ----------------
@@ -124,8 +124,9 @@ function bindControls() {
   document.getElementById('cursorToggle').addEventListener('change', e => { AppState.cursor = e.target.checked; rerenderAll(); });
 
   document.getElementById('importBtn').addEventListener('click', doImport);
-  document.getElementById('analyzeBtn').addEventListener('click', () => runAnalyze(false));
-  document.getElementById('reanalyzeBtn').addEventListener('click', () => runAnalyze(true));
+  document.getElementById('analyzeBtn').addEventListener('click', () => runAnalyze({ force: false, multipath: 'none' }));
+  document.getElementById('multipathBtn').addEventListener('click', () =>
+    runAnalyze({ force: true, multipath: document.getElementById('multipathMethod').value }));
 
   document.querySelectorAll('input[name="txMode"]').forEach(el => el.addEventListener('change', updateTxModeUI));
   document.getElementById('rxChooseBtn').addEventListener('click', () => chooseLocalFile('rx'));
@@ -182,13 +183,15 @@ function parseCarrier() {
   return unit === 'GHz' ? v * 1e9 : v * 1e6;
 }
 
-async function runAnalyze(force) {
+async function runAnalyze(opts = {}) {
+  const force = opts.force === true;
+  const multipath = opts.multipath || 'none';
   if (!AppState.rxBinName) { alert('请先选择 Rx 数据'); return; }
   const carrierHz = parseCarrier();
   if (carrierHz === null) { alert('请填写载波频率（算 Doppler 用）'); document.getElementById('carrierHzInput').focus(); return; }
   const txMode = document.querySelector('input[name="txMode"]:checked').value;
   const body = {
-    rxBinName: AppState.rxBinName, calBinName: AppState.calBinName || null, carrierHz, txMode, force,
+    rxBinName: AppState.rxBinName, calBinName: AppState.calBinName || null, carrierHz, txMode, force, multipath,
     txLat: numOrNull('txLat'), txLon: numOrNull('txLon'), txAlt: numOrNull('txAlt'),
   };
   setUiState('ANALYZING');
@@ -206,13 +209,15 @@ async function runAnalyze(force) {
 
 function pollAnalyze(jobId) {
   clearInterval(AppState.pollTimer);
+  let pct = 0;  // 后端为单次阻塞计算、无中间进度，这里用客户端估计逐步逼近，避免一直卡 0%
   AppState.pollTimer = setInterval(async () => {
     try {
       const res = await fetch(`/api/analyze/status/${jobId}`);
       if (!res.ok) throw new Error(res.status);
       const s = await res.json();
-      showProgress(true, s.progress || 0, `分析中… ${Math.round(s.progress || 0)}%`);
-      if (s.status === 'done') { clearInterval(AppState.pollTimer); showProgress(false); await loadDatasetFromApi(s.datasetName); }
+      pct = Math.min(95, pct + 6);
+      showProgress(true, pct, `分析中… ${pct}%`);
+      if (s.status === 'done') { clearInterval(AppState.pollTimer); showProgress(true, 100, '完成 100%'); await loadDatasetFromApi(s.datasetName); showProgress(false); }
       else if (s.status === 'error') { clearInterval(AppState.pollTimer); showProgress(false); setUiState('ERROR'); alert(`分析失败：${s.detail || '未知错误'}`); }
     } catch (err) {
       clearInterval(AppState.pollTimer); showProgress(false); setUiState('ERROR'); alert(`分析状态查询失败：${err.message}`);
@@ -278,7 +283,8 @@ async function loadDatasetFromApi(name = 'default') {
     updateDopplerTime();
     syncFrame(0);
     setUiState('READY');
-    if (AppState.activeModule === 'B') loadModuleB();
+    updateModuleBAvailability();
+    if (AppState.activeModule === 'B' && moduleBReady(AppState.dataset)) loadModuleB();
   } catch (err) {
     setUiState('ERROR'); resetUI();
     document.getElementById('datasetStatus').textContent = '数据加载失败';
@@ -417,11 +423,11 @@ function updateMapPanel() {
   const rx = ds.rxGps || [];
   const tx = ds.txGps;
   const cur = currentEntry()?.gps;
-  if (!rx.length || !tx || !cur) return;
+  if (!rx.length || !cur) return;  // TX 可选：无 TX 时仅按 RX 轨迹定位
   Object.values(AppState.leafletLayers).forEach(l => l && AppState.leafletMap.removeLayer(l));
   const rxLatLng = rx.map(p => [Number(p.lat), Number(p.lon)]).filter(p => Number.isFinite(p[0]) && Number.isFinite(p[1]));
-  const txLatLng = [Number(tx.lat), Number(tx.lon)];
-  const txValid = Number.isFinite(txLatLng[0]) && Number.isFinite(txLatLng[1]);
+  const txLatLng = tx ? [Number(tx.lat), Number(tx.lon)] : [NaN, NaN];
+  const txValid = !!tx && Number.isFinite(txLatLng[0]) && Number.isFinite(txLatLng[1]);
   AppState.leafletLayers.rxLine = L.polyline(rxLatLng, { color: '#2474d2', weight: 3, opacity: 0.85 }).addTo(AppState.leafletMap);
   if (txValid) AppState.leafletLayers.tx = L.circleMarker(txLatLng, { radius: 7, color: '#9d2a2a', fillColor: '#e55353', fillOpacity: 0.95 }).addTo(AppState.leafletMap).bindTooltip('Tx');
   AppState.leafletLayers.rx = L.circleMarker([Number(cur.lat), Number(cur.lon)], { radius: 8, color: '#fff', weight: 3, fillColor: '#19a974', fillOpacity: 0.95 }).addTo(AppState.leafletMap).bindTooltip('当前 Rx');
@@ -515,7 +521,42 @@ function initModuleBLayout() {
   AppState.charts.mbRmsDoppler = echarts.init(document.getElementById('mbRmsDopplerChart'));
 }
 
+function datasetHasMultipath(ds) {
+  const sage = ds && ds.sageDelayDoppler && ds.sageDelayDoppler.windowTracks && ds.sageDelayDoppler.windowTracks.length;
+  const music = ds && ds.musicDelay && ds.musicDelay.windowTracks && ds.musicDelay.windowTracks.length;
+  return Boolean(sage || music);
+}
+
+function datasetHasDistance(ds) {
+  const stats = (ds && ds.frameStats) || [];
+  return stats.some(s => s && Number.isFinite(s.distanceM));
+}
+
+// 模块 B 只要有多径(SAGE/MUSIC)结果即可查看；无 TX 距离时路损/阴影图会提示"需 TX 位置"，其余照常。
+function moduleBReady(ds) {
+  return datasetHasMultipath(ds);
+}
+
+function moduleBBlockedReason(ds) {
+  if (!datasetHasMultipath(ds)) return '需先做「多径分析」(SAGE / MUSIC) 才能查看模块 B';
+  return '';
+}
+
+function updateModuleBAvailability() {
+  const ok = moduleBReady(AppState.dataset);
+  const btn = document.getElementById('moduleBBtn');
+  if (btn) {
+    btn.disabled = !ok;
+    btn.title = ok ? '' : moduleBBlockedReason(AppState.dataset);
+  }
+  if (!ok && AppState.activeModule === 'B') switchModule('A');
+}
+
 function switchModule(target) {
+  if (target === 'B' && !moduleBReady(AppState.dataset)) {
+    alert(moduleBBlockedReason(AppState.dataset));
+    return;
+  }
   AppState.activeModule = target;
   document.getElementById('moduleAView').hidden = target !== 'A';
   document.getElementById('moduleBView').hidden = target !== 'B';
@@ -592,6 +633,14 @@ function renderModuleB(payload) {
 }
 
 function renderPathLossChart(pathLoss) {
+  if (!pathLoss || !pathLoss.fit || !(pathLoss.distanceM || []).length) {
+    AppState.charts.mbPathLoss.clear();
+    AppState.charts.mbPathLoss.setOption({
+      title: { text: '需 TX 位置（距离）', subtext: '请在左侧填写 TX 经纬度后重做「多径分析」', left: 'center', top: 'center',
+        textStyle: { fontSize: 14, color: '#888' }, subtextStyle: { fontSize: 12, color: '#aaa' } },
+    }, true);
+    return;
+  }
   const scatterData = pathLoss.distanceM.map((d, i) => [d, pathLoss.measuredDb[i]]);
   const fitData = pathLoss.fit.xDistanceM.map((d, i) => [d, pathLoss.fit.yFitDb[i]]).sort((a, b) => a[0] - b[0]);
   AppState.charts.mbPathLoss.setOption({

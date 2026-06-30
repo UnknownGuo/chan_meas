@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>信道测量分析软件</title>
-  <link rel="stylesheet" href="/static/styles.css?v=20260624-geocal" />
+  <link rel="stylesheet" href="/static/styles.css?v=20260630-r2" />
   <link rel="stylesheet" href="/static/leaflet.css" />
   <script src="/static/echarts.min.js"></script>
   <script src="/static/leaflet.js"></script>
@@ -71,7 +71,14 @@
       <section class="control-card">
         <h2>分析</h2>
         <button id="analyzeBtn" class="primary-btn full-width">分析</button>
-        <button id="reanalyzeBtn" class="secondary-btn full-width">重新分析（强制重算）</button>
+        <div class="multipath-row">
+          <select id="multipathMethod" aria-label="多径估计方法">
+            <option value="sage" selected>SAGE</option>
+            <option value="music">MUSIC</option>
+            <option value="both">都算</option>
+          </select>
+          <button id="multipathBtn" class="secondary-btn">多径分析</button>
+        </div>
         <div id="analyzeProgress" class="analyze-progress" hidden>
           <div class="bar"><div id="analyzeProgressFill"></div></div>
           <span id="analyzeProgressLabel">分析中…</span>
@@ -117,16 +124,6 @@
             <div id="dopplerWaterfallChart" class="chart"></div>
           </article>
         </div>
-        <div class="summary-row">
-          <article class="chart-card wide-chart">
-            <div class="card-title-row"><h3>SAGE 多径 时延-时间-功率</h3><button class="export-fig-btn" data-chart="delayTime">导出图</button></div>
-            <div id="delayTimeChart" class="chart"></div>
-          </article>
-          <article class="chart-card wide-chart">
-            <div class="card-title-row"><h3>SAGE 多径 多普勒-时间-功率</h3><button class="export-fig-btn" data-chart="dopplerTime">导出图</button></div>
-            <div id="dopplerTimeChart" class="chart"></div>
-          </article>
-        </div>
       </section>
 
       <section class="interactive-grid">
@@ -143,6 +140,19 @@
             <div id="mapLeaflet" class="leaflet-map"></div>
           </div>
         </article>
+      </section>
+
+      <section class="summary-grid" id="sageChartsSection">
+        <div class="summary-row">
+          <article class="chart-card wide-chart">
+            <div class="card-title-row"><h3>SAGE 多径 时延-时间-功率</h3><button class="export-fig-btn" data-chart="delayTime">导出图</button></div>
+            <div id="delayTimeChart" class="chart"></div>
+          </article>
+          <article class="chart-card wide-chart">
+            <div class="card-title-row"><h3>SAGE 多径 多普勒-时间-功率</h3><button class="export-fig-btn" data-chart="dopplerTime">导出图</button></div>
+            <div id="dopplerTimeChart" class="chart"></div>
+          </article>
+        </div>
       </section>
       </section>
 
@@ -209,6 +219,6 @@
     </main>
   </div>
 
-  <script src="/static/app.js?v=20260624-geocal"></script>
+  <script src="/static/app.js?v=20260630-r2"></script>
 </body>
 </html>

@@ -118,16 +118,23 @@ def _sliding_correlate(iq: np.ndarray) -> np.ndarray:
     """DC-remove → tile×3 → FFT matched-filter → (n_frames, U) complex64.
 
     Uses GPU (CUDA) when available; falls back to CPU torch.fft otherwise.
+    Frames are processed in chunks so peak memory stays bounded regardless of
+    dataset size (a full (n_frames, _N_FFT) transform would OOM on large .bin).
+    Each frame's matched filter is independent, so chunking is exact.
     """
-    t = torch.from_numpy(iq).to(_DEVICE)
-    t = t - t.mean(dim=1, keepdim=True)          # DC removal
-    ext = t.repeat(1, 3)                          # (n_frames, 3U)
-
-    F = torch.fft.fft(ext, n=_N_FFT, dim=1) * _S_MATCHED_F_GPU
-    corr = torch.fft.ifft(F, dim=1)
-
-    result = (corr[:, 2 * U - 1 : 3 * U - 1] / U).to(torch.complex64)
-    return result.cpu().numpy()
+    n = int(iq.shape[0])
+    out = np.empty((n, U), dtype=np.complex64)
+    chunk = 4096
+    for lo in range(0, n, chunk):
+        hi = min(lo + chunk, n)
+        t = torch.from_numpy(np.ascontiguousarray(iq[lo:hi])).to(_DEVICE)
+        t = t - t.mean(dim=1, keepdim=True)          # DC removal
+        ext = t.repeat(1, 3)                          # (chunk, 3U)
+        F = torch.fft.fft(ext, n=_N_FFT, dim=1) * _S_MATCHED_F_GPU
+        corr = torch.fft.ifft(F, dim=1)
+        out[lo:hi] = (corr[:, 2 * U - 1 : 3 * U - 1] / U).to(torch.complex64).cpu().numpy()
+        del t, ext, F, corr
+    return out
 
 
 # ── Public API ────────────────────────────────────────────────────────────────

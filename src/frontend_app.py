@@ -8,6 +8,8 @@ so it can later be replaced/extended by real upload and processing endpoints.
 from __future__ import annotations
 
 import json
+import shutil
+import sys
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -22,23 +24,37 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from src.analysis.module_b import build_module_b_payload
-from src.paths import ZJK_RAW_DIR, ZJK_SAGE_OUTPUTS_DIR
+from src.paths import EXTRA_RAW_DIR, EXTRA_SAGE_OUTPUTS_DIR
 from src.pipeline.analyze import analyze_one
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 WEB_DIR = PROJECT_ROOT / "web"
 STATIC_DIR = WEB_DIR / "static"
-DATASET_DIR = PROJECT_ROOT / "data" / "ui_samples"
-TILE_CACHE_DIR = PROJECT_ROOT / "data" / "tile_cache" / "esri_imagery"
-PREFERRED_DATASET_NAME = "0m-0m-all-firstantenna-xiaoquan_b2b_adaptive_sage.json"
-LEGACY_DEFAULT_DATASET_NAME = "zjk_last_measurement_max15_full.json"
 
-# 原始测量 .bin 所在目录 + SAGE 离线处理输出目录；都从 config/local.py 取，换机器不用改代码。
-RAW_BIN_DIRS = [ZJK_RAW_DIR] if ZJK_RAW_DIR else []
-SAGE_OUTPUTS_DIR = ZJK_SAGE_OUTPUTS_DIR
-ADAPTIVE_SUMMARY_PATH = (
-    SAGE_OUTPUTS_DIR / "adaptive_w20_step100" / "adaptive_summary.json" if SAGE_OUTPUTS_DIR else None
-)
+# 程序运行目录：打包后(frozen)取 exe 所在文件夹，使 raw_bins/datasets 与 exe 同级、用户可见可写；
+# 源码运行时取项目根。
+if getattr(sys, "frozen", False):
+    APP_DIR = Path(sys.executable).resolve().parent
+else:
+    APP_DIR = PROJECT_ROOT
+
+RAW_BIN_DIR = APP_DIR / "raw_bins"          # 用户把自己的 .bin 放这里
+DATASET_DIR = APP_DIR / "datasets"          # 分析结果 + 演示数据，UI 列表读这里
+TILE_CACHE_DIR = APP_DIR / "tile_cache" / "esri_imagery"
+_SEED_DATASETS_DIR = PROJECT_ROOT / "data" / "seed_datasets"  # 随包内置演示数据(只读)
+
+RAW_BIN_DIR.mkdir(parents=True, exist_ok=True)
+DATASET_DIR.mkdir(parents=True, exist_ok=True)
+# 首次运行：把内置演示数据集播种到可写的 datasets 目录
+if _SEED_DATASETS_DIR.exists() and not any(DATASET_DIR.glob("*.json")):
+    for _seed in _SEED_DATASETS_DIR.glob("*.json"):
+        shutil.copy2(_seed, DATASET_DIR / _seed.name)
+
+PREFERRED_DATASET_NAME = "shaolong_1400M_b2b_adaptive_sage.json"
+
+RAW_BIN_DIRS = [RAW_BIN_DIR]
+SAGE_OUTPUTS_DIR = None
+ADAPTIVE_SUMMARY_PATH = None
 
 # ---- compute-or-cache job state（单 worker 假设，见实现规格 §4.1）----
 JOB_LOCK = threading.Lock()
@@ -76,12 +92,16 @@ class AnalyzeRequest(BaseModel):
     txLon: float | None = None
     txAlt: float | None = None
     force: bool = False
+    multipath: str = "none"  # 多径估计方式: none(只做基础分析) | sage | music | both
 
 
 def _run_analysis(job_id: str, stem: str, req: AnalyzeRequest, dataset_dir: Path) -> None:
     try:
         rx_path = _resolve_raw_bin(req.rxBinName)
         cal_path = _resolve_raw_bin(req.calBinName) if req.calBinName else None
+        mp = (req.multipath or "none").lower()
+        include_sage = mp in ("sage", "both")
+        include_delay_music = mp in ("music", "both")
         analyze_one(
             rx_path,
             carrier_hz=req.carrierHz,
@@ -91,6 +111,8 @@ def _run_analysis(job_id: str, stem: str, req: AnalyzeRequest, dataset_dir: Path
             tx_lat=req.txLat,
             tx_lon=req.txLon,
             tx_alt=req.txAlt,
+            include_sage=include_sage,
+            include_delay_music=include_delay_music,
         )
         with JOB_LOCK:
             JOBS[job_id] = {"status": "done", "progress": 100, "datasetName": f"{stem}_b2b_adaptive_sage.json"}
@@ -185,9 +207,8 @@ def load_dpsd_frame(name: str, frame_index: int, dataset_dir: Path = DATASET_DIR
 
 def _default_dataset_name(dataset_dir: Path = DATASET_DIR) -> str:
     names = list_dataset_files(dataset_dir)
-    for preferred in (PREFERRED_DATASET_NAME, LEGACY_DEFAULT_DATASET_NAME):
-        if preferred in names:
-            return preferred
+    if PREFERRED_DATASET_NAME in names:
+        return PREFERRED_DATASET_NAME
     if names:
         return names[0]
     raise FileNotFoundError(f"No UI sample datasets found in {dataset_dir}")
@@ -217,7 +238,8 @@ def create_app(dataset_dir: Path = DATASET_DIR) -> FastAPI:
 
     @app.get("/", include_in_schema=False)
     def index() -> FileResponse:
-        return FileResponse(WEB_DIR / "index.html")
+        # 不缓存首页 HTML，确保改版后浏览器总是拿到最新引用（避免加载到旧的 app.js/css）
+        return FileResponse(WEB_DIR / "index.html", headers={"Cache-Control": "no-store"})
 
     @app.get("/tiles/base/{z}/{x}/{y}.jpg", include_in_schema=False)
     def base_tile(z: int, x: int, y: int) -> Response:

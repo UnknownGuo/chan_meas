@@ -35,15 +35,6 @@ class TxGps:
     source: str | None = None
 
 
-DEFAULT_ZJK_TX_GPS = TxGps(
-    lat=40.303232,
-    lon=115.771857,
-    alt=561.41,
-    accuracy=3.79,
-    source="/mnt/win_data/data_mea/zjk_mea/TX_GPS",
-)
-
-
 def _finite_float(value: Any, default: float = 0.0, digits: int | None = None) -> float:
     """Return a JSON-safe finite float, replacing NaN/inf with default."""
     try:
@@ -77,16 +68,15 @@ def distance_3d_m(tx: TxGps, rx_lat: float, rx_lon: float, rx_alt: float | None 
     return math.sqrt(horizontal * horizontal + dz * dz)
 
 
-def load_tx_gps(path: str | Path | None = None) -> TxGps:
-    """Load static Tx GPS.
+def load_tx_gps(path: str | Path | None = None) -> "TxGps | None":
+    """Load static Tx GPS from a JSON file, or return None if unavailable.
 
-    Supported machine-readable format is JSON with `lat`, `lon`, and optional
-    `alt`/`accuracy`.  The current zjk_mea `TX_GPS` artifact is a JPEG screenshot,
-    so image-like/binary files fall back to the manually verified coordinate from
-    that screenshot.
+    TX position is optional. When no path is given (or the file is not a usable
+    JSON with `lat`/`lon`), the dataset is built without a TX: distances and the
+    `txGps` field are omitted instead of falling back to any hardcoded location.
     """
     if path is None:
-        return DEFAULT_ZJK_TX_GPS
+        return None
 
     p = Path(path)
     if not p.exists():
@@ -94,26 +84,19 @@ def load_tx_gps(path: str | Path | None = None) -> TxGps:
 
     raw = p.read_bytes()
     is_jsonish = p.suffix.lower() == ".json" or raw[:1] in (b"{", b"[")
-    if is_jsonish:
-        payload = json.loads(raw.decode("utf-8"))
-        if isinstance(payload, list):
-            if not payload:
-                raise ValueError(f"Tx GPS JSON list is empty: {p}")
-            payload = payload[0]
-        return TxGps(
-            lat=_finite_float(payload["lat"]),
-            lon=_finite_float(payload.get("lon", payload.get("lng"))),
-            alt=_finite_float(payload.get("alt", payload.get("altitude", 0.0))),
-            accuracy=None if payload.get("accuracy") is None else _finite_float(payload.get("accuracy")),
-            source=str(p),
-        )
+    if not is_jsonish:
+        raise ValueError(f"Unsupported Tx GPS format (need JSON with lat/lon): {p}")
 
-    # Known current artifact: a GPS-toolbox JPEG screenshot under zjk_mea/TX_GPS.
+    payload = json.loads(raw.decode("utf-8"))
+    if isinstance(payload, list):
+        if not payload:
+            raise ValueError(f"Tx GPS JSON list is empty: {p}")
+        payload = payload[0]
     return TxGps(
-        lat=DEFAULT_ZJK_TX_GPS.lat,
-        lon=DEFAULT_ZJK_TX_GPS.lon,
-        alt=DEFAULT_ZJK_TX_GPS.alt,
-        accuracy=DEFAULT_ZJK_TX_GPS.accuracy,
+        lat=_finite_float(payload["lat"]),
+        lon=_finite_float(payload.get("lon", payload.get("lng"))),
+        alt=_finite_float(payload.get("alt", payload.get("altitude", 0.0))),
+        accuracy=None if payload.get("accuracy") is None else _finite_float(payload.get("accuracy")),
         source=str(p),
     )
 
@@ -121,7 +104,7 @@ def load_tx_gps(path: str | Path | None = None) -> TxGps:
 def compute_frame_stats(
     cir: np.ndarray,
     gps: Mapping[str, np.ndarray],
-    tx_gps: TxGps,
+    tx_gps: "TxGps | None",
     *,
     bandwidth_hz: float = BW_HZ,
     frame_rate_hz: float = FRAME_RATE_HZ,
@@ -151,14 +134,14 @@ def compute_frame_stats(
         rx_lat = _finite_float(gps["lat"][frame_idx])
         rx_lon = _finite_float(gps["lon"][frame_idx])
         rx_alt = _finite_float(gps.get("alt", np.zeros(cir.shape[0]))[frame_idx])
-        distance_m = distance_3d_m(tx_gps, rx_lat, rx_lon, rx_alt)
+        distance_m = distance_3d_m(tx_gps, rx_lat, rx_lon, rx_alt) if tx_gps is not None else None
         peak_power_db = _finite_float(p_db[peak_bin], digits=6)
 
         stats.append(
             {
                 "frame": frame_idx,
                 "timeSec": _finite_float(frame_idx / float(frame_rate_hz), digits=6),
-                "distanceM": _finite_float(distance_m, digits=3),
+                "distanceM": (_finite_float(distance_m, digits=3) if distance_m is not None else None),
                 "peakPowerDb": peak_power_db,
                 "peakDelayNs": _finite_float(delay_ns[peak_bin], digits=3),
                 "meanPowerDb": _finite_float(10.0 * np.log10(float(np.mean(p)) + 1e-30), digits=6),
@@ -1143,7 +1126,7 @@ def _mpc_scatter_from_peaks(frame_stats: list[dict[str, Any]]) -> list[dict[str,
 def compute_frame_payload(
     cir: np.ndarray,
     gps: Mapping[str, np.ndarray],
-    tx_gps: TxGps,
+    tx_gps: "TxGps | None",
     frame_stats: list[dict[str, Any]],
     *,
     frame_index: int,
@@ -1161,7 +1144,7 @@ def compute_frame_payload(
         "frame": frame_index,
         "timeSec": _finite_float(frame_index / float(frame_rate_hz), digits=6),
         "rxGps": _rx_gps_record(gps, frame_index, frame_rate_hz),
-        "txGps": {k: v for k, v in asdict(tx_gps).items() if v is not None},
+        "txGps": ({k: v for k, v in asdict(tx_gps).items() if v is not None} if tx_gps is not None else None),
         "stats": stat,
         "pdpCurve": compute_pdp_curve(
             cir,
@@ -1190,7 +1173,7 @@ def build_dataset_from_arrays(
     name: str,
     cir: np.ndarray,
     gps: Mapping[str, np.ndarray],
-    tx_gps: TxGps,
+    tx_gps: "TxGps | None",
     bandwidth_hz: float = BW_HZ,
     frame_rate_hz: float = FRAME_RATE_HZ,
     max_delay_bins: int = 256,
@@ -1225,8 +1208,7 @@ def build_dataset_from_arrays(
     time_sec = np.round(np.arange(0, n_frames, time_step, dtype=np.float64) / float(frame_rate_hz), 6).tolist()
     decimated_indices = list(range(0, n_frames, time_step))
 
-    tx_payload = asdict(tx_gps)
-    tx_payload = {k: v for k, v in tx_payload.items() if v is not None}
+    tx_payload = ({k: v for k, v in asdict(tx_gps).items() if v is not None} if tx_gps is not None else None)
 
     frame_payloads = [
         compute_frame_payload(
@@ -1338,6 +1320,7 @@ def build_measurement_dataset(
     rx_path: str | Path,
     *,
     tx_gps_path: str | Path | None = None,
+    tx_gps: "TxGps | None" = None,
     max_frames: int | None = 300,
     max_delay_bins: int = 256,
     relative_power: bool = False,
@@ -1352,7 +1335,7 @@ def build_measurement_dataset(
 ) -> dict[str, Any]:
     """Read Rx .bin data and build a compact frontend dataset."""
     rx = Path(rx_path)
-    tx = load_tx_gps(tx_gps_path)
+    tx = tx_gps if tx_gps is not None else load_tx_gps(tx_gps_path)
     frames = _load_frames(rx, max_frames=max_frames)
     gps = _parse_gps(frames)
     iq = _parse_iq(frames)
@@ -1416,7 +1399,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Export channel measurement data for the future HTML UI.")
     parser.add_argument("--rx", required=True, type=Path, help="Rx .bin file or directory")
     parser.add_argument("--out", required=True, type=Path, help="Output JSON path")
-    parser.add_argument("--tx-gps", type=Path, default=None, help="Tx GPS JSON or current TX_GPS screenshot artifact")
+    parser.add_argument("--tx-gps", type=Path, default=None, help="Tx GPS JSON file (lat/lon/alt); optional")
     parser.add_argument("--max-frames", type=int, default=300, help="Maximum frames to process")
     parser.add_argument("--max-delay-bins", type=int, default=256, help="Maximum delay bins to export")
     parser.add_argument("--relative-power", action="store_true", help="Export CIR power relative to each frame peak")
